@@ -1,13 +1,12 @@
-"""Build invest-tracker configs from downloaded Naver Cafe attachments."""
+"""Build invest-tracker configs from manually prepared source files."""
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from readers.reader import SUPPORTED_EXTS
+from readers.reader import SUPPORTED_EXTS, iter_supported_files
 
 
 @dataclass
@@ -18,15 +17,9 @@ class ArticleBundle:
     files: list[str]
 
 
-def _safe_name(text: str) -> str:
-    text = re.sub(r"[\\/:*?\"<>|]+", "_", text).strip()
-    return text or "untitled"
-
-
 def _strip_title_noise(title: str) -> str:
     title = re.sub(r"\[[^\]]+\]", " ", title)
     title = re.sub(r"\([A-Z0-9.\-]{1,12}\)", " ", title)
-    title = re.sub(r"\b[A-Z]{1,6}\b", " ", title)
     title = re.sub(r"\b\d{6}(?:\.KS|\.KQ)?\b", " ", title, flags=re.IGNORECASE)
     title = re.sub(r"\s+", " ", title).strip(" -_")
     return title or "unknown company"
@@ -47,43 +40,50 @@ def _lookup_ticker(title: str, files: list[str], ticker_map: dict[str, str]) -> 
     return ""
 
 
-def load_manifest(path: str | Path) -> dict[str, Any]:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+def bundles_from_directory(input_dir: str | Path) -> list[ArticleBundle]:
+    """Create article bundles from a manually organized input directory.
 
+    Each child directory becomes one presentation bundle. If supported files are
+    placed directly in input_dir, they are treated as a single bundle named after
+    input_dir.
+    """
+    root = Path(input_dir).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"input directory not found: {root}")
 
-def bundles_from_manifest(manifest: dict[str, Any]) -> list[ArticleBundle]:
     bundles: list[ArticleBundle] = []
-    for article in manifest.get("articles", []):
-        files = [
-            item["path"]
-            for item in article.get("attachments", [])
-            if Path(item.get("path", "")).suffix.lower() in SUPPORTED_EXTS
-        ]
+    direct_files = [str(p) for p in iter_supported_files(root)]
+    if direct_files:
+        bundles.append(ArticleBundle(title=root.name, author="", url="", files=direct_files))
+
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        files = [str(p) for p in iter_supported_files(child)]
         if files:
             bundles.append(
                 ArticleBundle(
-                    title=article.get("title") or "untitled",
-                    author=article.get("author") or "",
-                    url=article.get("url") or "",
+                    title=child.name,
+                    author="",
+                    url="",
                     files=files,
                 )
             )
     return bundles
 
 
-def build_generated_config(
+def build_config_from_bundles(
     base_config: dict[str, Any],
-    manifest_path: str | Path,
+    bundles: list[ArticleBundle],
     output_path: str | Path,
 ) -> Path:
-    """Create a temporary config whose presentations are the downloaded articles."""
-    manifest_path = Path(manifest_path)
+    """Create a config whose presentations are manually prepared bundles."""
     output_path = Path(output_path)
     automation = base_config.get("automation", {}) or {}
     ticker_map = automation.get("ticker_map", {}) or {}
 
     presentations: list[dict[str, Any]] = []
-    for bundle in bundles_from_manifest(load_manifest(manifest_path)):
+    for bundle in bundles:
         rel_files = []
         for file_path in bundle.files:
             p = Path(file_path)
@@ -123,13 +123,14 @@ def build_generated_config(
     return output_path
 
 
-def unique_download_path(directory: Path, suggested_name: str) -> Path:
-    directory.mkdir(parents=True, exist_ok=True)
-    stem = _safe_name(Path(suggested_name).stem)
-    suffix = Path(suggested_name).suffix
-    candidate = directory / f"{stem}{suffix}"
-    i = 2
-    while candidate.exists():
-        candidate = directory / f"{stem}_{i}{suffix}"
-        i += 1
-    return candidate
+def build_config_from_directory(
+    base_config: dict[str, Any],
+    input_dir: str | Path,
+    output_path: str | Path,
+) -> Path:
+    """Create a generated config from a folder of user-provided files."""
+    bundles = bundles_from_directory(input_dir)
+    if not bundles:
+        supported = ", ".join(sorted(SUPPORTED_EXTS))
+        raise RuntimeError(f"no supported files found in {input_dir} ({supported})")
+    return build_config_from_bundles(base_config, bundles, output_path)

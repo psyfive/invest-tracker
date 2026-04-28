@@ -7,65 +7,55 @@ summarizer:
   mode: rule
   model: claude-sonnet-4-5
 
-# Manual/static inputs still work with:
+# Static inputs still work with:
 #   python main.py run -c config.yaml
 presentations:
-  - presenter: 김철수
-    company: 삼성전자
+  - presenter: Kim
+    company: Samsung Electronics
     ticker: 005930.KS
     files:
       - samples/samsung.txt
 
-  - presenter: 이영희
+  - presenter: Lee
     company: NVIDIA
     ticker: NVDA
     files:
       - samples/nvda.txt
 
-  - presenter: 박민준
-    company: 테슬라
+  - presenter: Park
+    company: Tesla
     ticker: TSLA
     files:
       - samples/tsla.txt
 
-  - presenter: 정수진
-    company: 카카오
+  - presenter: Jung
+    company: Kakao
     ticker: 035720.KS
     files:
       - samples/kakao.pptx
 
-  - presenter: 최영준
-    company: 애플
+  - presenter: Choi
+    company: Apple
     ticker: AAPL
     files:
       - samples/apple.docx
 
-  - presenter: 서지민
-    company: 마이크로소프트
+  - presenter: Seo
+    company: Microsoft
     ticker: MSFT
     files:
       - samples/microsoft.pdf
 
 automation:
-  download_dir: downloads
-
-  naver:
-    cafe_url: "https://cafe.naver.com/YOUR_CAFE"
-    menu_name: "종목 분석"
-    days: 7
-    max_pages: 2
-    headless: true
-    browser_user_data_dir: ".browser/naver"
-
-  # Optional but recommended. Titles/filenames often do not contain yfinance tickers.
+  # Optional but recommended. Folder names and filenames often do not contain yfinance tickers.
   ticker_map:
-    삼성전자: 005930.KS
-    카카오: 035720.KS
-    엔비디아: NVDA
+    Samsung: 005930.KS
+    Samsung Electronics: 005930.KS
+    Kakao: 035720.KS
     NVIDIA: NVDA
-    테슬라: TSLA
-    애플: AAPL
-    마이크로소프트: MSFT
+    Tesla: TSLA
+    Apple: AAPL
+    Microsoft: MSFT
 
   # Create an integration at https://www.notion.so/my-integrations,
   # share the target page/database with it, then set NOTION_TOKEN.

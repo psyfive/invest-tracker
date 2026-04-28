@@ -6,8 +6,6 @@ import json
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +13,8 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from automation.naver_cafe import download_recent_attachments, open_login_session
 from automation.notion import NotionClient, blocks_for_post, target_from_config
-from automation.pipeline import build_generated_config
+from automation.pipeline import build_config_from_directory
 from price import PriceSnapshot, fetch_price_snapshot, save_snapshot
 from readers import read_file
 from renderer import render_post
@@ -178,12 +175,6 @@ def publish_to_notion(config: dict[str, Any], posts: list[GeneratedPost]) -> lis
     return page_ids
 
 
-def _is_monday_after_last_sunday(now: datetime | None = None) -> bool:
-    now = now or datetime.now()
-    yesterday = (now - timedelta(days=1)).date()
-    return yesterday.weekday() == 6 and (yesterday + timedelta(days=7)).month != yesterday.month
-
-
 def cmd_run(args: argparse.Namespace) -> int:
     config_path = Path(args.config).resolve()
     config = _load_config(config_path)
@@ -225,50 +216,33 @@ def cmd_refresh_prices(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_naver_login(args: argparse.Namespace) -> int:
-    open_login_session(_load_config(args.config))
-    return 0
-
-
-def cmd_naver_download(args: argparse.Namespace) -> int:
-    config_path = Path(args.config).resolve()
-    config = _load_config(config_path)
-    run_dir = Path(args.output_dir or config.get("automation", {}).get("download_dir", "downloads"))
-    if not run_dir.is_absolute():
-        run_dir = config_path.parent / run_dir / datetime.now().strftime("%Y-%m-%d")
-    manifest = download_recent_attachments(config, run_dir)
-    print(f"manifest: {manifest}")
-    return 0
-
-
-def cmd_auto_run(args: argparse.Namespace) -> int:
-    if args.enforce_monthly_window and not _is_monday_after_last_sunday():
-        print("Skipped: today is not the Monday after the month's last Sunday.")
-        return 0
-
+def cmd_run_folder(args: argparse.Namespace) -> int:
     config_path = Path(args.config).resolve()
     config = _load_config(config_path)
     base_dir = config_path.parent
-    run_root = Path(args.output_dir or (config.get("automation", {}) or {}).get("download_dir", "downloads"))
-    if not run_root.is_absolute():
-        run_root = base_dir / run_root
-    run_dir = run_root / datetime.now().strftime("%Y-%m-%d")
+    input_dir = Path(args.input_dir)
+    if not input_dir.is_absolute():
+        input_dir = base_dir / input_dir
+    output_dir = Path(args.output_dir or config.get("output_dir", "output"))
+    if not output_dir.is_absolute():
+        output_dir = base_dir / output_dir
 
-    if args.manifest:
-        manifest_path = Path(args.manifest).resolve()
-    else:
-        manifest_path = download_recent_attachments(config, run_dir)
-    print(f"manifest: {manifest_path}")
-
-    generated_config_path = run_dir / "generated_config.yaml"
-    build_generated_config(config, manifest_path, generated_config_path)
+    generated_config_path = output_dir / "generated_config.yaml"
+    build_config_from_directory(config, input_dir, generated_config_path)
+    print(f"generated config: {generated_config_path}")
     generated_config = _load_config(generated_config_path)
 
-    posts = process_config(generated_config, generated_config_path.parent, mode_override=args.mode)
+    posts = process_config(
+        generated_config,
+        generated_config_path.parent,
+        mode_override=args.mode,
+        presenter_filter=args.presenter,
+        ticker_filter=args.ticker,
+    )
     if args.publish_notion:
         publish_to_notion(generated_config, posts)
 
-    print(f"\nAuto-run done: {len(posts)} post(s)")
+    print(f"\nDone: {len(posts)} post(s)")
     return 0 if posts else 1
 
 
@@ -288,27 +262,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_ref.add_argument("--config", "-c", required=True)
     p_ref.set_defaults(func=cmd_refresh_prices)
 
-    p_login = sub.add_parser("naver-login", help="open a persistent Naver login browser")
-    p_login.add_argument("--config", "-c", required=True)
-    p_login.set_defaults(func=cmd_naver_login)
-
-    p_down = sub.add_parser("naver-download", help="download recent attachments from the cafe menu")
-    p_down.add_argument("--config", "-c", required=True)
-    p_down.add_argument("--output-dir")
-    p_down.set_defaults(func=cmd_naver_download)
-
-    p_auto = sub.add_parser("auto-run", help="download cafe files, summarize, and optionally publish")
-    p_auto.add_argument("--config", "-c", required=True)
-    p_auto.add_argument("--mode", choices=["rule", "llm"])
-    p_auto.add_argument("--manifest", help="reuse a previously downloaded manifest.json")
-    p_auto.add_argument("--output-dir")
-    p_auto.add_argument("--publish-notion", action="store_true")
-    p_auto.add_argument(
-        "--enforce-monthly-window",
-        action="store_true",
-        help="skip unless today is the Monday after the month's last Sunday",
-    )
-    p_auto.set_defaults(func=cmd_auto_run)
+    p_folder = sub.add_parser("run-folder", help="summarize manually prepared files from a folder")
+    p_folder.add_argument("--config", "-c", required=True)
+    p_folder.add_argument("--input-dir", "-i", required=True)
+    p_folder.add_argument("--mode", choices=["rule", "llm"])
+    p_folder.add_argument("--presenter")
+    p_folder.add_argument("--ticker")
+    p_folder.add_argument("--output-dir")
+    p_folder.add_argument("--publish-notion", action="store_true")
+    p_folder.set_defaults(func=cmd_run_folder)
 
     return parser
 

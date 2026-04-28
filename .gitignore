@@ -5,8 +5,7 @@ venv/
 .env
 output/
 !output/.gitkeep
-downloads/
-.browser/
+incoming/
 *.db
 *.sqlite
 .DS_Store

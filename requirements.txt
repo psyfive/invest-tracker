@@ -4,8 +4,5 @@ python-pptx>=0.6.23
 pypdf>=4.0.0
 python-docx>=1.1.0
 
-# Optional: needed for Naver Cafe automation.
-playwright>=1.43.0
-
 # Optional: needed only when summarizer.mode is llm.
 anthropic>=0.40.0
