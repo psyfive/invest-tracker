@@ -13,12 +13,17 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from automation.notion import NotionClient, blocks_for_post, target_from_config
+from automation.notion import (
+    NotionClient,
+    blocks_for_post,
+    properties_for_post,
+    target_from_config,
+)
 from automation.pipeline import build_config_from_directory
 from price import PriceSnapshot, fetch_price_snapshot, save_snapshot
 from readers import read_file
 from renderer import render_post
-from summarizer import Summary, get_summarizer
+from summarizer import SectorClassifier, Summary, get_summarizer
 
 
 @dataclass
@@ -28,6 +33,7 @@ class GeneratedPost:
     html: str
     output_path: Path
     sources: list[str]
+    sectors: list[str]
 
 
 def _load_config(path: str | Path) -> dict[str, Any]:
@@ -87,6 +93,7 @@ def process_config(
     mode_override: str | None = None,
     presenter_filter: str | None = None,
     ticker_filter: str | None = None,
+    classify_sector: bool = False,
 ) -> list[GeneratedPost]:
     output_dir = _resolve_config_path(base_dir, config.get("output_dir", "output"), "output")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -100,6 +107,10 @@ def process_config(
         summ_kwargs["model"] = summ_cfg["model"]
     summarizer = get_summarizer(mode, **summ_kwargs)
     print(f"[config] summarizer mode: {mode}")
+
+    sector_classifier: SectorClassifier | None = None
+    if classify_sector:
+        sector_classifier = SectorClassifier(model=summ_cfg.get("model", "claude-sonnet-4-5"))
 
     presentations = config.get("presentations", []) or []
     if presenter_filter:
@@ -130,6 +141,17 @@ def process_config(
             print(f"  [error] summarize failed: {e}", file=sys.stderr)
             continue
 
+        sectors: list[str] = []
+        if sector_classifier is not None:
+            try:
+                sectors = sector_classifier.classify(company=company, ticker=ticker, body=text)
+                if sectors:
+                    print(f"  sectors: {', '.join(sectors)}")
+                else:
+                    print("  [warning] sector classification returned no valid sectors", file=sys.stderr)
+            except Exception as e:
+                print(f"  [warning] sector classification failed: {e}", file=sys.stderr)
+
         price = fetch_price_snapshot(ticker)
         try:
             save_snapshot(price, db_path=db_path, csv_path=csv_path)
@@ -150,7 +172,7 @@ def process_config(
         output_path = output_dir / (_safe_filename(f"{company}_{ticker or 'noticker'}") + ".html")
         output_path.write_text(html_doc, encoding="utf-8")
         print(f"  wrote {output_path}")
-        posts.append(GeneratedPost(summary, price, html_doc, output_path, source_labels))
+        posts.append(GeneratedPost(summary, price, html_doc, output_path, source_labels, sectors))
 
     return posts
 
@@ -169,6 +191,7 @@ def publish_to_notion(config: dict[str, Any], posts: list[GeneratedPost]) -> lis
             target,
             title=title,
             children=blocks_for_post(post.summary, post.price, post.sources),
+            extra_properties=properties_for_post(post.summary, post.sectors),
         )
         page_ids.append(page_id)
         print(f"  published to Notion: {title} ({page_id})")
@@ -184,6 +207,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         mode_override=args.mode,
         presenter_filter=args.presenter,
         ticker_filter=args.ticker,
+        classify_sector=args.publish_notion,
     )
     if args.publish_notion:
         publish_to_notion(config, posts)
@@ -238,6 +262,7 @@ def cmd_run_folder(args: argparse.Namespace) -> int:
         mode_override=args.mode,
         presenter_filter=args.presenter,
         ticker_filter=args.ticker,
+        classify_sector=args.publish_notion,
     )
     if args.publish_notion:
         publish_to_notion(generated_config, posts)

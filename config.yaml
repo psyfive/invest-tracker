@@ -58,9 +58,9 @@ automation:
     Microsoft: MSFT
 
   # Create an integration at https://www.notion.so/my-integrations,
-  # share the target page/database with it, then set NOTION_TOKEN.
+  # share the target database with it, then set NOTION_TOKEN.
   notion:
     token_env: NOTION_TOKEN
     parent_page_id: ""
-    database_id: ""
-    title_property: "Name"
+    database_id: "665100ba979340c3b6679513fa2de8a5"
+    title_property: "\uae30\uc5c5\uba85"

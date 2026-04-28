@@ -49,6 +49,12 @@ python main.py refresh-prices -c config.yaml
 
 Generated files are written under `output/`.
 
+When `--publish-notion` is used, the tool also classifies each company into the
+standard sector list and sends Notion database properties for ticker, presenter,
+one or more sectors, and Korean market when available. Sector classification
+uses the same Anthropic API key as LLM summarization and leaves the Notion sector
+empty if the classifier fails.
+
 ## Folder Run
 
 When files are prepared manually, put each company or presentation in its own

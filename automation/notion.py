@@ -46,7 +46,13 @@ class NotionClient:
             body = e.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Notion API failed ({e.code}): {body}") from e
 
-    def create_page(self, target: NotionTarget, title: str, children: list[dict[str, Any]]) -> str:
+    def create_page(
+        self,
+        target: NotionTarget,
+        title: str,
+        children: list[dict[str, Any]],
+        extra_properties: dict[str, Any] | None = None,
+    ) -> str:
         if target.database_id:
             parent = {"database_id": target.database_id}
             properties = {
@@ -63,6 +69,9 @@ class NotionClient:
             }
         else:
             raise RuntimeError("Notion target needs database_id or parent_page_id")
+
+        if extra_properties:
+            properties.update(extra_properties)
 
         page = self.request(
             "POST",
@@ -109,6 +118,43 @@ def _heading(level: int, text: str) -> dict[str, Any]:
 def _split_paragraphs(text: str) -> Iterable[str]:
     parts = [p.strip() for p in (text or "").splitlines() if p.strip()]
     return parts or ["(empty)"]
+
+
+def _rich_text_property(text: str) -> dict[str, Any]:
+    return {"rich_text": [{"text": {"content": text[:2000]}}]} if text else {"rich_text": []}
+
+
+def _select_property(value: str) -> dict[str, Any]:
+    return {"select": {"name": value}} if value else {"select": None}
+
+
+def _multi_select_property(values: list[str]) -> dict[str, Any]:
+    return {"multi_select": [{"name": value} for value in values]}
+
+
+def _market_from_ticker(ticker: str) -> str:
+    ticker = (ticker or "").upper()
+    if ticker.endswith(".KS"):
+        return "KOSPI"
+    if ticker.endswith(".KQ"):
+        return "KOSDAQ"
+    return ""
+
+
+def properties_for_post(summary: Summary, sectors: list[str] | None = None) -> dict[str, Any]:
+    """Build optional Notion database properties for generated posts."""
+    sectors = sectors or []
+    properties: dict[str, Any] = {}
+    if summary.ticker:
+        properties["\ud2f0\ucee4"] = _rich_text_property(summary.ticker)
+        market = _market_from_ticker(summary.ticker)
+        if market:
+            properties["\uc2dc\uc7a5"] = _select_property(market)
+    if summary.presenter:
+        properties["\ubc1c\ud45c\uc790"] = _select_property(summary.presenter)
+    if sectors:
+        properties["\uc0b0\uc5c5 \uc139\ud130"] = _multi_select_property(sectors)
+    return properties
 
 
 def blocks_for_post(summary: Summary, snap: PriceSnapshot, sources: list[str]) -> list[dict[str, Any]]:
