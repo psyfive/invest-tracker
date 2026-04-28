@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+output/
+!output/.gitkeep
+downloads/
+.browser/
+*.db
+*.sqlite
+.DS_Store
