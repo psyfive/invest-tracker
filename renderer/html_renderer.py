@@ -48,7 +48,7 @@ def _render_price_table(snap: PriceSnapshot) -> str:
         'style="border-collapse:collapse;width:100%;margin:8px 0">'
         '<thead><tr style="background:#fafafa">'
         "<th>Name</th><th>Ticker</th><th>Last close</th>"
-        "<th>Change</th><th>Currency</th><th>Fetched at</th>"
+        "<th>Change</th><th>Currency</th><th>Market cap</th><th>Fetched at</th>"
         "</tr></thead><tbody>"
     )
     body = (
@@ -58,6 +58,7 @@ def _render_price_table(snap: PriceSnapshot) -> str:
         f'<td style="text-align:right">{_fmt_num(snap.last_close)}</td>'
         f'<td style="text-align:right">{_fmt_pct(snap.change_pct)}</td>'
         f"<td>{_esc(snap.currency)}</td>"
+        f'<td style="text-align:right">{_fmt_num(snap.market_cap, 0)}</td>'
         f"<td>{_esc(snap.fetched_at)}</td>"
         "</tr>"
     )
@@ -120,5 +121,6 @@ def render_post(summary: Summary, snap: PriceSnapshot, sources: Iterable[str] = 
         f'{_render_section("Company overview", summary.overview)}'
         f'{_render_section("Investment thesis", summary.thesis)}'
         f'{_render_section("Risks", summary.risks)}'
+        f'{_render_section("Conclusion / checkpoints", summary.conclusion)}'
         f"{source_block}"
     )

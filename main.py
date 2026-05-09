@@ -6,6 +6,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ from automation.notion import (
     properties_for_post,
     target_from_config,
 )
-from automation.pipeline import build_config_from_directory
+from automation.pipeline import build_config_from_directory, build_report_config_from_directory
 from price import PriceSnapshot, fetch_price_snapshot, save_snapshot
 from readers import read_file
 from renderer import render_post
@@ -34,6 +35,10 @@ class GeneratedPost:
     output_path: Path
     sources: list[str]
     sectors: list[str]
+
+
+REPORT_MANIFEST_NAME = "processed_reports.json"
+REPORT_MANIFEST_VERSION = 1
 
 
 def _load_config(path: str | Path) -> dict[str, Any]:
@@ -57,6 +62,108 @@ def _load_config(path: str | Path) -> dict[str, Any]:
 def _safe_filename(text: str) -> str:
     text = re.sub(r"[\\/:*?\"<>|]+", "_", text).strip()
     return text or "untitled"
+
+
+def _report_manifest_path(output_dir: Path) -> Path:
+    return output_dir / REPORT_MANIFEST_NAME
+
+
+def _report_key(presenter: str, company: str, ticker: str, presentation_month: str) -> str:
+    return "|".join(
+        [
+            presenter.strip(),
+            company.strip(),
+            ticker.strip().upper(),
+            presentation_month.strip(),
+        ]
+    )
+
+
+def _report_key_for_entry(entry: dict[str, Any]) -> str:
+    return _report_key(
+        str(entry.get("presenter") or ""),
+        str(entry.get("company") or ""),
+        str(entry.get("ticker") or ""),
+        str(entry.get("presentation_month") or ""),
+    )
+
+
+def _report_key_for_post(post: GeneratedPost) -> str:
+    return _report_key(
+        post.summary.presenter,
+        post.summary.company,
+        post.summary.ticker,
+        post.summary.presentation_month,
+    )
+
+
+def load_processed_report_manifest(path: Path) -> dict[str, Any]:
+    """Load the local report completion manifest."""
+    if not path.exists():
+        return {"version": REPORT_MANIFEST_VERSION, "reports": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[warning] failed to read report manifest {path}: {e}", file=sys.stderr)
+        return {"version": REPORT_MANIFEST_VERSION, "reports": {}}
+
+    if not isinstance(data, dict) or not isinstance(data.get("reports"), dict):
+        print(f"[warning] invalid report manifest format: {path}", file=sys.stderr)
+        return {"version": REPORT_MANIFEST_VERSION, "reports": {}}
+    data.setdefault("version", REPORT_MANIFEST_VERSION)
+    return data
+
+
+def skip_processed_reports(config: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    """Remove report presentations that were already completed locally."""
+    reports = manifest.get("reports") or {}
+    kept: list[dict[str, Any]] = []
+    for entry in config.get("presentations", []) or []:
+        key = _report_key_for_entry(entry)
+        if key and key in reports:
+            print(
+                "[skip] report already processed locally: "
+                f"{entry.get('company', '')} {entry.get('presentation_month', '')}"
+            )
+            continue
+        kept.append(entry)
+
+    filtered = dict(config)
+    filtered["presentations"] = kept
+    return filtered
+
+
+def save_processed_report_manifest(path: Path, manifest: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def record_processed_reports(path: Path, posts: list[GeneratedPost]) -> None:
+    """Record successfully completed reports after processing and optional publishing."""
+    if not posts:
+        return
+
+    manifest = load_processed_report_manifest(path)
+    reports = manifest.setdefault("reports", {})
+    processed_at = datetime.now(timezone.utc).isoformat()
+    for post in posts:
+        key = _report_key_for_post(post)
+        if not key:
+            continue
+        reports[key] = {
+            "company": post.summary.company,
+            "ticker": post.summary.ticker,
+            "presenter": post.summary.presenter,
+            "presentation_month": post.summary.presentation_month,
+            "output_path": str(post.output_path),
+            "sources": post.sources,
+            "processed_at": processed_at,
+        }
+    manifest["version"] = REPORT_MANIFEST_VERSION
+    save_processed_report_manifest(path, manifest)
 
 
 def _resolve_config_path(base_dir: Path, value: str | Path, default: str) -> Path:
@@ -125,6 +232,7 @@ def process_config(
         company = (entry.get("company") or "").strip()
         ticker = (entry.get("ticker") or "").strip()
         presenter = (entry.get("presenter") or "").strip()
+        presentation_month = (entry.get("presentation_month") or "").strip()
         files = entry.get("files", []) or []
         if not company:
             print("[skip] presentation has no company")
@@ -136,7 +244,13 @@ def process_config(
             print(f"  [warning] no readable text from {files}")
 
         try:
-            summary = summarizer.summarize(text, company=company, ticker=ticker, presenter=presenter)
+            summary = summarizer.summarize(
+                text,
+                company=company,
+                ticker=ticker,
+                presenter=presenter,
+                presentation_month=presentation_month,
+            )
         except Exception as e:
             print(f"  [error] summarize failed: {e}", file=sys.stderr)
             continue
@@ -185,8 +299,19 @@ def publish_to_notion(config: dict[str, Any], posts: list[GeneratedPost]) -> lis
     page_ids: list[str] = []
     for post in posts:
         title = post.summary.company
-        if post.summary.ticker:
-            title += f" ({post.summary.ticker})"
+        if target.database_id and post.summary.presentation_month:
+            existing_page_id = client.find_existing_page(
+                target,
+                post.summary.company,
+                post.summary.presentation_month,
+            )
+            if existing_page_id:
+                print(
+                    "  [skip] Notion page already exists: "
+                    f"{post.summary.company} {post.summary.presentation_month} ({existing_page_id})"
+                )
+                continue
+
         page_id = client.create_page(
             target,
             title=title,
@@ -196,6 +321,37 @@ def publish_to_notion(config: dict[str, Any], posts: list[GeneratedPost]) -> lis
         page_ids.append(page_id)
         print(f"  published to Notion: {title} ({page_id})")
     return page_ids
+
+
+def skip_existing_notion_reports(config: dict[str, Any]) -> dict[str, Any]:
+    """Remove report presentations that already exist in the target Notion DB."""
+    target = target_from_config(config)
+    if target is None:
+        raise RuntimeError("Notion config is missing")
+    if not target.database_id:
+        return config
+
+    client = NotionClient(target.token)
+    kept: list[dict[str, Any]] = []
+    for entry in config.get("presentations", []) or []:
+        company = (entry.get("company") or "").strip()
+        presentation_month = (entry.get("presentation_month") or "").strip()
+        if not company or not presentation_month:
+            kept.append(entry)
+            continue
+
+        existing_page_id = client.find_existing_page(target, company, presentation_month)
+        if existing_page_id:
+            print(
+                "[skip] Notion page already exists before processing: "
+                f"{company} {presentation_month} ({existing_page_id})"
+            )
+            continue
+        kept.append(entry)
+
+    filtered = dict(config)
+    filtered["presentations"] = kept
+    return filtered
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -271,6 +427,52 @@ def cmd_run_folder(args: argparse.Namespace) -> int:
     return 0 if posts else 1
 
 
+def cmd_run_reports(args: argparse.Namespace) -> int:
+    config_path = Path(args.config).resolve()
+    config = _load_config(config_path)
+    base_dir = config_path.parent
+    input_dir = Path(args.input_dir)
+    if not input_dir.is_absolute():
+        input_dir = base_dir / input_dir
+    output_dir = Path(args.output_dir or config.get("output_dir", "output"))
+    if not output_dir.is_absolute():
+        output_dir = base_dir / output_dir
+
+    generated_config_path = output_dir / "generated_reports_config.yaml"
+    manifest_path = _report_manifest_path(output_dir)
+    build_report_config_from_directory(config, input_dir, generated_config_path)
+    print(f"generated report config: {generated_config_path}")
+    generated_config = _load_config(generated_config_path)
+
+    if not getattr(args, "force", False):
+        manifest = load_processed_report_manifest(manifest_path)
+        generated_config = skip_processed_reports(generated_config, manifest)
+        if not (generated_config.get("presentations") or []):
+            print("\nDone: 0 report post(s); all reports already processed locally")
+            return 0
+
+    if args.publish_notion:
+        generated_config = skip_existing_notion_reports(generated_config)
+        if not (generated_config.get("presentations") or []):
+            print("\nDone: 0 report post(s); all reports already exist in Notion")
+            return 0
+
+    posts = process_config(
+        generated_config,
+        generated_config_path.parent,
+        mode_override=args.mode,
+        presenter_filter=args.presenter,
+        ticker_filter=args.ticker,
+        classify_sector=args.publish_notion,
+    )
+    if args.publish_notion:
+        publish_to_notion(generated_config, posts)
+    record_processed_reports(manifest_path, posts)
+
+    print(f"\nDone: {len(posts)} report post(s)")
+    return 0 if posts else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="invest-tracker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -297,10 +499,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_folder.add_argument("--publish-notion", action="store_true")
     p_folder.set_defaults(func=cmd_run_folder)
 
+    p_reports = sub.add_parser("run-reports", help="summarize report folders named presenter,company,ticker,yy.mm")
+    p_reports.add_argument("--config", "-c", required=True)
+    p_reports.add_argument("--input-dir", "-i", default="reports")
+    p_reports.add_argument("--mode", choices=["rule", "llm"])
+    p_reports.add_argument("--presenter")
+    p_reports.add_argument("--ticker")
+    p_reports.add_argument("--output-dir")
+    p_reports.add_argument("--publish-notion", action="store_true")
+    p_reports.add_argument("--force", action="store_true", help="reprocess reports already recorded locally")
+    p_reports.set_defaults(func=cmd_run_reports)
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        pass
+    else:
+        load_dotenv()
+
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

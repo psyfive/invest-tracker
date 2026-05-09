@@ -15,6 +15,8 @@ class ArticleBundle:
     author: str
     url: str
     files: list[str]
+    ticker: str = ""
+    presentation_month: str = ""
 
 
 def _strip_title_noise(title: str) -> str:
@@ -38,6 +40,41 @@ def _lookup_ticker(title: str, files: list[str], ticker_map: dict[str, str]) -> 
     if match:
         return f"{match.group(1)}.{(match.group(2) or 'KS').upper()}"
     return ""
+
+
+def normalize_ticker(ticker: str) -> str:
+    """Normalize user-provided tickers for yfinance.
+
+    Korean tickers should be provided with suffixes in folder names, e.g.
+    107640.kq or 005930.ks. The suffix is upper-cased for yfinance.
+    """
+    compact = re.sub(r"\s+", "", ticker or "")
+    if not compact:
+        return ""
+    if "." in compact:
+        symbol, suffix = compact.rsplit(".", 1)
+        return f"{symbol.upper()}.{suffix.upper()}"
+    return compact.upper()
+
+
+def parse_report_folder_name(folder_name: str) -> dict[str, str]:
+    """Parse 'presenter,company,ticker,yy.mm' report folder names."""
+    parts = [part.strip() for part in folder_name.split(",")]
+    if len(parts) != 4 or any(not part for part in parts):
+        raise ValueError(
+            "report folder name must be 'presenter,company,ticker,yy.mm'"
+        )
+
+    presenter, company, ticker, presentation_month = parts
+    if not re.fullmatch(r"\d{2}\.\d{2}", presentation_month):
+        raise ValueError("presentation month must use yy.mm format")
+
+    return {
+        "presenter": presenter,
+        "company": company,
+        "ticker": normalize_ticker(ticker),
+        "presentation_month": presentation_month,
+    }
 
 
 def bundles_from_directory(input_dir: str | Path) -> list[ArticleBundle]:
@@ -72,6 +109,40 @@ def bundles_from_directory(input_dir: str | Path) -> list[ArticleBundle]:
     return bundles
 
 
+def report_bundles_from_directory(input_dir: str | Path) -> list[ArticleBundle]:
+    """Create bundles from report folders named presenter,company,ticker,yy.mm."""
+    root = Path(input_dir).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"reports directory not found: {root}")
+
+    bundles: list[ArticleBundle] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        try:
+            parsed = parse_report_folder_name(child.name)
+        except ValueError as e:
+            print(f"[skip] invalid report folder '{child.name}': {e}")
+            continue
+
+        files = [str(p) for p in iter_supported_files(child)]
+        if not files:
+            print(f"[skip] report folder has no supported files: {child.name}")
+            continue
+
+        bundles.append(
+            ArticleBundle(
+                title=parsed["company"],
+                author=parsed["presenter"],
+                url="",
+                files=files,
+                ticker=parsed["ticker"],
+                presentation_month=parsed["presentation_month"],
+            )
+        )
+    return bundles
+
+
 def build_config_from_bundles(
     base_config: dict[str, Any],
     bundles: list[ArticleBundle],
@@ -92,13 +163,14 @@ def build_config_from_bundles(
             except ValueError:
                 rel_files.append(str(p))
 
-        ticker = _lookup_ticker(bundle.title, rel_files, ticker_map)
+        ticker = bundle.ticker or _lookup_ticker(bundle.title, rel_files, ticker_map)
         company = _strip_title_noise(bundle.title)
         presentations.append(
             {
                 "presenter": bundle.author,
                 "company": company,
                 "ticker": ticker,
+                "presentation_month": bundle.presentation_month,
                 "files": rel_files,
                 "source_url": bundle.url,
             }
@@ -133,4 +205,17 @@ def build_config_from_directory(
     if not bundles:
         supported = ", ".join(sorted(SUPPORTED_EXTS))
         raise RuntimeError(f"no supported files found in {input_dir} ({supported})")
+    return build_config_from_bundles(base_config, bundles, output_path)
+
+
+def build_report_config_from_directory(
+    base_config: dict[str, Any],
+    input_dir: str | Path,
+    output_path: str | Path,
+) -> Path:
+    """Create a generated config from report folders."""
+    bundles = report_bundles_from_directory(input_dir)
+    if not bundles:
+        supported = ", ".join(sorted(SUPPORTED_EXTS))
+        raise RuntimeError(f"no valid report folders found in {input_dir} ({supported})")
     return build_config_from_bundles(base_config, bundles, output_path)

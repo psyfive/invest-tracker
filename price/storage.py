@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS price_snapshots (
     change_pct  REAL,
     currency    TEXT,
     name        TEXT,
+    market_cap  REAL,
     status      TEXT,
     PRIMARY KEY (ticker, date)
 );
@@ -36,6 +37,7 @@ CSV_FIELDS = [
     "change_pct",
     "currency",
     "name",
+    "market_cap",
     "status",
 ]
 
@@ -44,6 +46,9 @@ def _ensure_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.execute(SCHEMA)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(price_snapshots)").fetchall()}
+    if "market_cap" not in cols:
+        conn.execute("ALTER TABLE price_snapshots ADD COLUMN market_cap REAL")
     conn.commit()
     return conn
 
@@ -73,8 +78,8 @@ def save_snapshot(
             """
             INSERT INTO price_snapshots
                 (ticker, date, fetched_at, last_close, prev_close, change_pct,
-                 currency, name, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 currency, name, market_cap, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(ticker, date) DO UPDATE SET
                 fetched_at=excluded.fetched_at,
                 last_close=excluded.last_close,
@@ -82,6 +87,7 @@ def save_snapshot(
                 change_pct=excluded.change_pct,
                 currency=excluded.currency,
                 name=excluded.name,
+                market_cap=excluded.market_cap,
                 status=excluded.status
             """,
             (
@@ -93,6 +99,7 @@ def save_snapshot(
                 row["change_pct"],
                 row["currency"],
                 row["name"],
+                row["market_cap"],
                 row["status"],
             ),
         )

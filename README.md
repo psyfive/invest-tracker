@@ -29,6 +29,7 @@ For Notion publishing:
 
 ```bash
 set NOTION_TOKEN=...
+set NOTION_DATABASE_ID=...
 ```
 
 Create a Notion integration, share the target page or database with that
@@ -83,6 +84,32 @@ yfinance ticker.
 
 If supported files are placed directly inside the input folder, the entire folder
 is treated as one presentation.
+
+## Report Folder Run
+
+Put each report in a folder under `reports/` using:
+
+```text
+reports/
+  박신영,한중엔시에스,107640.kq,26.04/
+    deck.pptx
+    notes.txt
+```
+
+Then run:
+
+```bash
+python main.py run-reports -c config.yaml --mode llm --publish-notion
+```
+
+`run-reports` parses presenter, company, ticker, and presentation month from
+the folder name. Korean tickers should include the yfinance suffix in the folder
+name, such as `107640.kq` or `005930.ks`; the script normalizes them to
+`107640.KQ` and `005930.KS`.
+
+Successful report runs are recorded in `output/processed_reports.json`. Future
+`run-reports` calls skip matching presenter/company/ticker/month entries before
+any LLM calls are made. Use `--force` to reprocess a report intentionally.
 
 ## Chat-Based Workflow
 

@@ -8,27 +8,27 @@ from .base import Summary, Summarizer
 
 SECTION_KEYWORDS: dict[str, list[str]] = {
     "overview": [
-        "기업개요",
-        "회사개요",
-        "회사 개요",
-        "기업 개요",
-        "사업 개요",
-        "기업소개",
-        "회사소개",
-        "비즈니스 모델",
-        "사업 모델",
+        "\uae30\uc5c5\uac1c\uc694",
+        "\uae30\uc5c5 \uac1c\uc694",
+        "\ud68c\uc0ac\uac1c\uc694",
+        "\ud68c\uc0ac \uac1c\uc694",
+        "\uc0ac\uc5c5 \uac1c\uc694",
+        "\uae30\uc5c5\uc18c\uac1c",
+        "\ud68c\uc0ac\uc18c\uac1c",
+        "\ube44\uc988\ub2c8\uc2a4 \ubaa8\ub378",
+        "\uc0ac\uc5c5 \ubaa8\ub378",
         "company overview",
         "business overview",
         "about",
     ],
     "thesis": [
-        "투자 아이디어",
-        "투자아이디어",
-        "투자포인트",
-        "투자 포인트",
-        "투자 근거",
-        "성장 동력",
-        "매수 이유",
+        "\ud22c\uc790 \uc544\uc774\ub514\uc5b4",
+        "\ud22c\uc790\uc544\uc774\ub514\uc5b4",
+        "\ud22c\uc790\ud3ec\uc778\ud2b8",
+        "\ud22c\uc790 \ud3ec\uc778\ud2b8",
+        "\ud22c\uc790 \uadfc\uac70",
+        "\uc131\uc7a5 \ub3d9\ub825",
+        "\ub9e4\uc218 \uc774\uc720",
         "investment thesis",
         "thesis",
         "catalyst",
@@ -36,21 +36,21 @@ SECTION_KEYWORDS: dict[str, list[str]] = {
         "why buy",
     ],
     "risks": [
-        "투자 리스크",
-        "투자리스크",
-        "리스크 요인",
-        "위험 요인",
-        "주요 리스크",
+        "\ud22c\uc790 \ub9ac\uc2a4\ud06c",
+        "\ud22c\uc790\ub9ac\uc2a4\ud06c",
+        "\ub9ac\uc2a4\ud06c \uc694\uc778",
+        "\uc704\ud5d8 \uc694\uc778",
+        "\uc8fc\uc694 \ub9ac\uc2a4\ud06c",
         "risk",
         "risks",
         "downside",
     ],
     "target_price": [
-        "목표주가",
-        "목표 주가",
-        "목표가",
+        "\ubaa9\ud45c\uc8fc\uac00",
+        "\ubaa9\ud45c \uc8fc\uac00",
+        "\ubaa9\ud45c\uac00",
+        "\ubc38\ub958\uc5d0\uc774\uc158",
         "valuation",
-        "밸류에이션",
         "price target",
         "target price",
     ],
@@ -73,10 +73,10 @@ def _looks_like_header(line: str, keyword: str) -> tuple[bool, str]:
         tail = stripped[len(keyword) :]
         tail_low = tail.lower().strip()
         if not tail_low or (
-            len(tail_low) <= 12 and re.match(r"^[:：\-()\[\]\s.,~]*$", tail_low)
+            len(tail_low) <= 12 and re.match(r"^[:>\-()\[\]\s.,~]*$", tail_low)
         ):
             return True, ""
-        match = re.match(r"^\s*[:：]\s*(.+)$", tail)
+        match = re.match(r"^\s*[:>\-]\s*(.+)$", tail)
         if match:
             return True, match.group(1).strip()
 
@@ -139,16 +139,16 @@ def _find_sections(text: str) -> dict[str, str]:
 
 
 def _extract_target_price(text: str) -> str:
-    label = r"(목표\s*주가|목표가|target\s*price|price\s*target)"
+    label = r"(\ubaa9\ud45c\s*\uc8fc\uac00|\ubaa9\ud45c\uac00|target\s*price|price\s*target)"
     pattern_sym = re.compile(
-        label + r"\s*[:：]?\s*([₩$€£¥]?\s*[0-9][0-9,\.]*\s*(?:원|KRW|USD|달러)?)",
+        label + r"\s*[:>\-]?\s*([0-9][0-9,\.]*\s*(?:\uc6d0|KRW|USD|\ub2ec\ub7ec)?)",
         re.IGNORECASE,
     )
     match = pattern_sym.search(text)
     if match:
         return _normalize(match.group(2))
 
-    upside = re.search(r"(상승\s*여력|upside)\s*[:：]?\s*([0-9.]+\s*%)", text, re.IGNORECASE)
+    upside = re.search(r"(\uc0c1\uc2b9\s*\uc5ec\ub825|upside)\s*[:>\-]?\s*([0-9.]+\s*%)", text, re.IGNORECASE)
     if upside:
         return f"{upside.group(1)} {upside.group(2)}"
     return ""
@@ -173,9 +173,10 @@ class RuleBasedSummarizer(Summarizer):
         company: str,
         ticker: str = "",
         presenter: str = "",
+        presentation_month: str = "",
     ) -> Summary:
         if not text or not text.strip():
-            return Summary(company=company, ticker=ticker, presenter=presenter)
+            return Summary(company=company, ticker=ticker, presenter=presenter, presentation_month=presentation_month)
 
         sections = _find_sections(text)
         overview = _truncate(sections.get("overview", ""), self.max_section_chars)
@@ -195,6 +196,7 @@ class RuleBasedSummarizer(Summarizer):
             company=company,
             ticker=ticker,
             presenter=presenter,
+            presentation_month=presentation_month,
             overview=overview,
             thesis=thesis,
             risks=risks,

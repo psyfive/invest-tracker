@@ -15,13 +15,16 @@ Read the presentation text below and summarize {company} ({ticker}) into this ex
 Rules:
 - Use only information present in the source text.
 - Write Korean unless the source itself is English-only.
-- Use short, useful paragraphs or bullet-like sentences.
+- Follow a deep investment report style suitable for a Notion investment-study page.
+- Make investment thesis exactly 3 concise bullet-like lines.
+- Make risks exactly 3 concise bullet-like lines.
 - Return JSON only. Do not wrap it in markdown fences.
 
 {{
-  "overview": "Company overview, business model, products/services, market position.",
-  "thesis": "Investment thesis, growth drivers, catalysts, reasons to buy.",
-  "risks": "Macro, industry, company-specific, valuation, or execution risks.",
+  "overview": "Company overview: core business model, products/services, and market position. Write in Korean.",
+  "thesis": "Investment ideas: exactly 3 growth drivers or catalysts, separated by newlines. Write in Korean.",
+  "risks": "Investment risks: exactly 3 downside or fundamental-damage risks, separated by newlines. Write in Korean.",
+  "conclusion": "Conclusion/checkpoints: key items to monitor after the presentation. Write in Korean.",
   "target_price": "Target price or upside, including unit, if present."
 }}
 
@@ -91,9 +94,10 @@ class LLMSummarizer(Summarizer):
         company: str,
         ticker: str = "",
         presenter: str = "",
+        presentation_month: str = "",
     ) -> Summary:
         if not text or not text.strip():
-            return Summary(company=company, ticker=ticker, presenter=presenter)
+            return Summary(company=company, ticker=ticker, presenter=presenter, presentation_month=presentation_month)
 
         prompt = PROMPT_TEMPLATE.format(
             company=company,
@@ -107,7 +111,7 @@ class LLMSummarizer(Summarizer):
         except Exception as e:
             if not self.fallback_on_error:
                 raise
-            summary = self._fallback.summarize(text, company, ticker, presenter)
+            summary = self._fallback.summarize(text, company, ticker, presenter, presentation_month)
             prefix = f"[LLM call failed; used rule-based fallback: {e}]"
             summary.overview = f"{prefix}\n{summary.overview}" if summary.overview else prefix
             return summary
@@ -116,9 +120,11 @@ class LLMSummarizer(Summarizer):
             company=company,
             ticker=ticker,
             presenter=presenter,
+            presentation_month=presentation_month,
             overview=str(data.get("overview", "")).strip(),
             thesis=str(data.get("thesis", "")).strip(),
             risks=str(data.get("risks", "")).strip(),
+            conclusion=str(data.get("conclusion", "")).strip(),
             target_price=str(data.get("target_price", "")).strip(),
             raw_excerpt=text[:300],
         )

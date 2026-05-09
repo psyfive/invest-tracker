@@ -12,9 +12,11 @@ class Summary:
     company: str
     ticker: str = ""
     presenter: str = ""
+    presentation_month: str = ""
     overview: str = ""
     thesis: str = ""
     risks: str = ""
+    conclusion: str = ""
     target_price: str = ""
     raw_excerpt: str = ""
 
@@ -22,7 +24,7 @@ class Summary:
         return asdict(self)
 
     def is_empty(self) -> bool:
-        return not (self.overview or self.thesis or self.risks or self.target_price)
+        return not (self.overview or self.thesis or self.risks or self.conclusion or self.target_price)
 
 
 class Summarizer(ABC):
@@ -35,5 +37,6 @@ class Summarizer(ABC):
         company: str,
         ticker: str = "",
         presenter: str = "",
+        presentation_month: str = "",
     ) -> Summary:
         ...

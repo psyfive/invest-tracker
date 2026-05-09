@@ -15,6 +15,7 @@ class PriceSnapshot:
     change_pct: Optional[float] = None
     currency: Optional[str] = None
     name: Optional[str] = None
+    market_cap: Optional[float] = None
     last_5_closes: list[dict] = field(default_factory=list)
     status: str = "ok"
 
@@ -27,6 +28,7 @@ class PriceSnapshot:
             "change_pct": self.change_pct,
             "currency": self.currency,
             "name": self.name,
+            "market_cap": self.market_cap,
             "status": self.status,
         }
 
@@ -86,13 +88,22 @@ def fetch_price_snapshot(ticker: str) -> PriceSnapshot:
 
         try:
             fast_info = symbol.fast_info
-            snap.currency = getattr(fast_info, "currency", None)
+            if isinstance(fast_info, dict):
+                snap.currency = fast_info.get("currency")
+                market_cap = fast_info.get("market_cap") or fast_info.get("marketCap")
+            else:
+                snap.currency = getattr(fast_info, "currency", None)
+                market_cap = getattr(fast_info, "market_cap", None)
+            if market_cap is not None:
+                snap.market_cap = float(market_cap)
         except Exception:
             pass
         try:
             info = symbol.info if hasattr(symbol, "info") else {}
             snap.name = info.get("longName") or info.get("shortName")
             snap.currency = snap.currency or info.get("currency")
+            if snap.market_cap is None and info.get("marketCap") is not None:
+                snap.market_cap = float(info["marketCap"])
         except Exception:
             pass
 

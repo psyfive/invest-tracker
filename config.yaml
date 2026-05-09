@@ -5,7 +5,7 @@ csv_path: output/prices.csv
 
 summarizer:
   mode: rule
-  model: claude-sonnet-4-5
+  model: claude-haiku-4-5-20251001
 
 # Static inputs still work with:
 #   python main.py run -c config.yaml
@@ -64,3 +64,4 @@ automation:
     parent_page_id: ""
     database_id: "665100ba979340c3b6679513fa2de8a5"
     title_property: "\uae30\uc5c5\uba85"
+    month_property: "\ubc1c\ud45c\uc6d4"
