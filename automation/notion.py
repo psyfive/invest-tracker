@@ -24,6 +24,7 @@ PROP_PRESENTER = "\ubc1c\ud45c\uc790"
 PROP_MONTH = "\ubc1c\ud45c\uc6d4"
 PROP_SECTOR = "\uc0b0\uc5c5 \uc139\ud130"
 PRICE_TREND_LABEL = "\uc2e4\uc2dc\uac04 \uc8fc\uac00 \ucd94\uc774"
+KOREAN_MARKETS = {"KOSPI", "KOSDAQ"}
 
 
 @dataclass
@@ -91,6 +92,22 @@ class NotionClient:
         if not results:
             return None
         return str(results[0].get("id") or "")
+
+    def iter_database_pages(self, target: NotionTarget) -> list[dict[str, Any]]:
+        pages: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            payload: dict[str, Any] = {"page_size": 100}
+            if cursor:
+                payload["start_cursor"] = cursor
+            result = self.query_database(target, payload)
+            pages.extend(result.get("results") or [])
+            if not result.get("has_more"):
+                break
+            cursor = result.get("next_cursor")
+            if not cursor:
+                break
+        return pages
 
     def create_page(
         self,
@@ -162,6 +179,20 @@ class NotionClient:
                     self.archive_block(block_id)
         self.append_blocks(page_id, [toggle_block])
 
+    def extract_price_trend_target_text(self, page_id: str) -> str:
+        for block in self.list_child_blocks(page_id):
+            if block.get("type") != "toggle":
+                continue
+            if _plain_text(block.get("toggle", {}).get("rich_text", [])) != PRICE_TREND_LABEL:
+                continue
+            block_id = str(block.get("id") or "")
+            if not block_id:
+                return ""
+            child_text = "\n".join(block_plain_text(child) for child in self.list_child_blocks(block_id))
+            target = parse_target_price_value(child_text)
+            return target.display if target else ""
+        return ""
+
 
 def target_from_config(config: dict[str, Any]) -> NotionTarget | None:
     notion = (config.get("automation", {}) or {}).get("notion", {}) or config.get("notion", {}) or {}
@@ -196,6 +227,17 @@ def _plain_text(rich_text: list[dict[str, Any]]) -> str:
     for item in rich_text or []:
         parts.append(str(item.get("plain_text") or item.get("text", {}).get("content") or ""))
     return "".join(parts)
+
+
+def block_plain_text(block: dict[str, Any]) -> str:
+    block_type = block.get("type")
+    if not block_type:
+        return ""
+    content = block.get(block_type, {})
+    rich_text = content.get("rich_text")
+    if isinstance(rich_text, list):
+        return _plain_text(rich_text)
+    return ""
 
 
 def _paragraph(text: str) -> dict[str, Any]:
@@ -334,6 +376,49 @@ def _select_property(value: str) -> dict[str, Any]:
 
 def _multi_select_property(values: list[str]) -> dict[str, Any]:
     return {"multi_select": [{"name": value} for value in values]}
+
+
+def _property_text(prop: dict[str, Any] | None) -> str:
+    prop = prop or {}
+    prop_type = prop.get("type")
+    if prop_type == "title":
+        return _plain_text(prop.get("title", []))
+    if prop_type == "rich_text":
+        return _plain_text(prop.get("rich_text", []))
+    if prop_type == "select":
+        select = prop.get("select") or {}
+        return str(select.get("name") or "")
+    if prop_type == "formula":
+        formula = prop.get("formula") or {}
+        formula_type = formula.get("type")
+        value = formula.get(formula_type)
+        return "" if value is None else str(value)
+    return ""
+
+
+def page_title(page: dict[str, Any], title_property: str = PROP_COMPANY) -> str:
+    properties = page.get("properties") or {}
+    title = _property_text(properties.get(title_property))
+    if title:
+        return title
+    for prop in properties.values():
+        if (prop or {}).get("type") == "title":
+            return _property_text(prop)
+    return ""
+
+
+def page_ticker(page: dict[str, Any], ticker_property: str = PROP_TICKER) -> str:
+    return _property_text((page.get("properties") or {}).get(ticker_property)).strip().upper()
+
+
+def page_market(page: dict[str, Any], market_property: str = PROP_MARKET) -> str:
+    return _property_text((page.get("properties") or {}).get(market_property)).strip().upper()
+
+
+def is_korean_market_page(page: dict[str, Any]) -> bool:
+    ticker = page_ticker(page)
+    market = page_market(page)
+    return ticker.endswith((".KS", ".KQ")) or market in KOREAN_MARKETS
 
 
 def _market_from_ticker(ticker: str) -> str:

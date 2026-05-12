@@ -17,6 +17,9 @@ if str(HERE) not in sys.path:
 from automation.notion import (
     NotionClient,
     blocks_for_post,
+    is_korean_market_page,
+    page_title,
+    page_ticker,
     price_trend_toggle_block,
     properties_for_post,
     target_from_config,
@@ -432,6 +435,41 @@ def cmd_refresh_prices(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_refresh_notion_prices(args: argparse.Namespace) -> int:
+    config_path = Path(args.config).resolve()
+    config = _load_config(config_path)
+    base_dir = config_path.parent
+    db_path = _resolve_config_path(base_dir, config.get("db_path", "output/prices.db"), "output/prices.db")
+    csv_path = _resolve_config_path(base_dir, config.get("csv_path", "output/prices.csv"), "output/prices.csv")
+
+    target = target_from_config(config)
+    if target is None:
+        raise RuntimeError("Notion config is missing")
+
+    client = NotionClient(target.token)
+    pages = client.iter_database_pages(target)
+    updated = 0
+    skipped = 0
+
+    for page in pages:
+        page_id = str(page.get("id") or "")
+        ticker = page_ticker(page)
+        company = page_title(page, target.title_property) or page_id
+        if not page_id or not ticker or not is_korean_market_page(page):
+            skipped += 1
+            continue
+
+        snap = fetch_price_snapshot(ticker)
+        save_snapshot(snap, db_path=db_path, csv_path=csv_path)
+        target_price_text = client.extract_price_trend_target_text(page_id)
+        client.replace_price_trend_toggle(page_id, price_trend_toggle_block(snap, target_price_text))
+        updated += 1
+        print(f"updated {company} ({ticker}): {snap.status} last={snap.last_close}")
+
+    print(f"Notion Korean-market price toggle updates: {updated}; skipped: {skipped}")
+    return 0
+
+
 def cmd_run_folder(args: argparse.Namespace) -> int:
     config_path = Path(args.config).resolve()
     config = _load_config(config_path)
@@ -525,6 +563,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_ref.add_argument("--config", "-c", required=True)
     p_ref.add_argument("--publish-notion", action="store_true")
     p_ref.set_defaults(func=cmd_refresh_prices)
+
+    p_ref_notion = sub.add_parser("refresh-notion-prices", help="refresh price toggles for all Korean-market Notion pages")
+    p_ref_notion.add_argument("--config", "-c", required=True)
+    p_ref_notion.set_defaults(func=cmd_refresh_notion_prices)
 
     p_folder = sub.add_parser("run-folder", help="summarize manually prepared files from a folder")
     p_folder.add_argument("--config", "-c", required=True)
