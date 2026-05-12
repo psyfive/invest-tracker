@@ -8,6 +8,7 @@ from unittest.mock import patch
 from automation.notion import NotionTarget
 from main import (
     GeneratedPost,
+    cmd_refresh_prices,
     cmd_run_reports,
     load_processed_report_manifest,
     record_processed_reports,
@@ -26,6 +27,19 @@ class FakeNotionClient:
         if company == "A Corp" and presentation_month == "26.04":
             return "page-1"
         return None
+
+
+class FakeRefreshNotionClient:
+    updates: list[tuple[str, dict]] = []
+
+    def __init__(self, token: str) -> None:
+        self.token = token
+
+    def find_existing_page(self, target: NotionTarget, company: str, presentation_month: str) -> str | None:
+        return "page-1" if company == "A Corp" and presentation_month == "26.04" else None
+
+    def replace_price_trend_toggle(self, page_id: str, toggle_block: dict) -> None:
+        self.updates.append((page_id, toggle_block))
 
 
 class RunReportsSkipTests(unittest.TestCase):
@@ -180,6 +194,52 @@ csv_path: prices.csv
 
         self.assertEqual(code, 0)
         process_config.assert_called_once()
+
+    def test_refresh_prices_publish_notion_replaces_price_toggle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "config.json"
+            source_path = root / "report.txt"
+            source_path.write_text(
+                "\ud604\uc7ac \uc8fc\uac00(70,000\uc6d0)\uac00 Base \ubaa9\ud45c\uac00(61,000\uc6d0)\ub97c \uc0c1\ud68c",
+                encoding="utf-8",
+            )
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "db_path": "prices.db",
+                        "csv_path": "prices.csv",
+                        "presentations": [
+                            {
+                                "company": "A Corp",
+                                "ticker": "000001.KS",
+                                "presentation_month": "26.04",
+                                "files": ["report.txt"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(config=str(config_path), publish_notion=True)
+            FakeRefreshNotionClient.updates = []
+
+            with (
+                patch("main.fetch_price_snapshot", return_value=PriceSnapshot(ticker="000001.KS", fetched_at="now", last_close=30500)),
+                patch("main.save_snapshot"),
+                patch("main.target_from_config", return_value=NotionTarget(token="token", database_id="db")),
+                patch("main.NotionClient", FakeRefreshNotionClient),
+            ):
+                code = cmd_refresh_prices(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(FakeRefreshNotionClient.updates), 1)
+        page_id, toggle = FakeRefreshNotionClient.updates[0]
+        self.assertEqual(page_id, "page-1")
+        serialized = str(toggle)
+        self.assertIn("\ubaa9\ud45c\uac00 \ub300\ube44 \uc704\uce58", serialized)
+        self.assertIn("50.0%", serialized)
+        self.assertIn("61,000\uc6d0", serialized)
 
 
 if __name__ == "__main__":

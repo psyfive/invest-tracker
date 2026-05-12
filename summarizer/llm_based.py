@@ -15,16 +15,20 @@ Read the presentation text below and summarize {company} ({ticker}) into this ex
 Rules:
 - Use only information present in the source text.
 - Write Korean unless the source itself is English-only.
-- Follow a deep investment report style suitable for a Notion investment-study page.
-- Make investment thesis exactly 3 concise bullet-like lines.
-- Make risks exactly 3 concise bullet-like lines.
+- Write for developers and investment study members: prioritize numbers, dates, quantities, product names, contracts, margins, capacity, revenue, valuation, and other verifiable facts.
+- Avoid vague adjectives such as "strong", "positive", "promising", or "significant" unless the source provides numeric evidence.
+- Every summary sentence or bullet line must end with a source marker in this form: [출처: file name p.N], [출처: file name Slide N], or [출처: file name].
+- For PPT/PDF evidence, preserve the nearest source location from markers such as "### File: name", "--- Slide N ---", and "--- Page N ---".
+- Make investment thesis exactly 3 concise bullet-like lines, separated by newlines.
+- Make risks exactly 3 concise bullet-like lines, separated by newlines.
+- Do not write a conclusion or checkpoints section.
 - Return JSON only. Do not wrap it in markdown fences.
 
 {{
-  "overview": "Company overview: core business model, products/services, and market position. Write in Korean.",
-  "thesis": "Investment ideas: exactly 3 growth drivers or catalysts, separated by newlines. Write in Korean.",
-  "risks": "Investment risks: exactly 3 downside or fundamental-damage risks, separated by newlines. Write in Korean.",
-  "conclusion": "Conclusion/checkpoints: key items to monitor after the presentation. Write in Korean.",
+  "overview": "Company overview: core business model, products/services, market position, and key numeric facts. End every sentence with a source marker.",
+  "thesis": "Investment ideas: exactly 3 upside drivers or catalysts, separated by newlines. Each line is a bullet-style fact summary and ends with a source marker.",
+  "risks": "Investment risks: exactly 3 downside or fundamental-damage risks, separated by newlines. Each line is a bullet-style fact summary and ends with a source marker.",
+  "conclusion": "",
   "target_price": "Target price or upside, including unit, if present."
 }}
 
@@ -124,7 +128,7 @@ class LLMSummarizer(Summarizer):
             overview=str(data.get("overview", "")).strip(),
             thesis=str(data.get("thesis", "")).strip(),
             risks=str(data.get("risks", "")).strip(),
-            conclusion=str(data.get("conclusion", "")).strip(),
+            conclusion="",
             target_price=str(data.get("target_price", "")).strip(),
             raw_excerpt=text[:300],
         )

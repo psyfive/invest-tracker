@@ -17,11 +17,12 @@ if str(HERE) not in sys.path:
 from automation.notion import (
     NotionClient,
     blocks_for_post,
+    price_trend_toggle_block,
     properties_for_post,
     target_from_config,
 )
 from automation.pipeline import build_config_from_directory, build_report_config_from_directory
-from price import PriceSnapshot, fetch_price_snapshot, save_snapshot
+from price import PriceSnapshot, extract_target_price, fetch_price_snapshot, save_snapshot
 from readers import read_file
 from renderer import render_post
 from summarizer import SectorClassifier, Summary, get_summarizer
@@ -194,6 +195,13 @@ def _gather_text(file_paths: list[str], base_dir: Path) -> tuple[str, list[str]]
     return "\n\n".join(chunks), used
 
 
+def _target_price_text_from_source(text: str, fallback: str = "") -> str:
+    target = extract_target_price(text)
+    if target is not None:
+        return target.display
+    return fallback.strip()
+
+
 def process_config(
     config: dict[str, Any],
     base_dir: Path,
@@ -254,6 +262,7 @@ def process_config(
         except Exception as e:
             print(f"  [error] summarize failed: {e}", file=sys.stderr)
             continue
+        summary.target_price = _target_price_text_from_source(text, summary.target_price)
 
         sectors: list[str] = []
         if sector_classifier is not None:
@@ -378,21 +387,48 @@ def cmd_refresh_prices(args: argparse.Namespace) -> int:
     db_path = _resolve_config_path(base_dir, config.get("db_path", "output/prices.db"), "output/prices.db")
     csv_path = _resolve_config_path(base_dir, config.get("csv_path", "output/prices.csv"), "output/prices.csv")
 
-    tickers = sorted(
-        {
-            (entry.get("ticker") or "").strip()
-            for entry in config.get("presentations", []) or []
-            if (entry.get("ticker") or "").strip()
-        }
-    )
+    presentations = config.get("presentations", []) or []
+    tickers = sorted({(entry.get("ticker") or "").strip() for entry in presentations if (entry.get("ticker") or "").strip()})
     if not tickers:
         print("no tickers found in config", file=sys.stderr)
         return 1
 
+    snapshots: dict[str, PriceSnapshot] = {}
     for ticker in tickers:
         snap = fetch_price_snapshot(ticker)
+        snapshots[ticker] = snap
         save_snapshot(snap, db_path=db_path, csv_path=csv_path)
         print(f"{ticker:14} {snap.status} last={snap.last_close}")
+
+    if getattr(args, "publish_notion", False):
+        target = target_from_config(config)
+        if target is None:
+            raise RuntimeError("Notion config is missing")
+        client = NotionClient(target.token)
+        updated = 0
+        for entry in presentations:
+            company = (entry.get("company") or "").strip()
+            presentation_month = (entry.get("presentation_month") or "").strip()
+            ticker = (entry.get("ticker") or "").strip()
+            if not company or not presentation_month:
+                print(
+                    f"  [skip] Notion price toggle refresh needs company and presentation_month: {company or ticker}",
+                    file=sys.stderr,
+                )
+                continue
+            snap = snapshots.get(ticker)
+            if snap is None:
+                continue
+            text, _used_files = _gather_text(entry.get("files", []) or [], base_dir)
+            target_price_text = _target_price_text_from_source(text)
+            page_id = client.find_existing_page(target, company, presentation_month)
+            if not page_id:
+                print(f"  [skip] Notion page not found: {company} {presentation_month}", file=sys.stderr)
+                continue
+            client.replace_price_trend_toggle(page_id, price_trend_toggle_block(snap, target_price_text))
+            updated += 1
+            print(f"  updated Notion price toggle: {company} {presentation_month}")
+        print(f"  Notion price toggle updates: {updated}")
     return 0
 
 
@@ -487,6 +523,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ref = sub.add_parser("refresh-prices", help="refresh only price snapshots")
     p_ref.add_argument("--config", "-c", required=True)
+    p_ref.add_argument("--publish-notion", action="store_true")
     p_ref.set_defaults(func=cmd_refresh_prices)
 
     p_folder = sub.add_parser("run-folder", help="summarize manually prepared files from a folder")

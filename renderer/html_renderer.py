@@ -2,10 +2,17 @@
 from __future__ import annotations
 
 import html
+import re
 from datetime import datetime
 from typing import Iterable
 
 from price.fetcher import PriceSnapshot
+from price.indicator import (
+    build_target_position,
+    format_target_detail_line,
+    format_target_position_line,
+    parse_target_price_value,
+)
 from summarizer.base import Summary
 
 
@@ -29,59 +36,105 @@ def _fmt_pct(value: float | None) -> str:
     return f'<span style="color:{color};font-weight:600">{sign}{value:.2f}%</span>'
 
 
-def _render_price_table(snap: PriceSnapshot) -> str:
-    if snap.status != "ok":
-        return (
-            '<table border="1" cellspacing="0" cellpadding="6" '
-            'style="border-collapse:collapse;width:100%;margin:8px 0">'
-            '<thead><tr style="background:#fafafa">'
-            "<th>Ticker</th><th>Status</th><th>Fetched at</th>"
-            "</tr></thead><tbody>"
-            f"<tr><td>{_esc(snap.ticker)}</td>"
-            f'<td style="color:#d32f2f">{_esc(snap.status)}</td>'
-            f"<td>{_esc(snap.fetched_at)}</td></tr>"
-            "</tbody></table>"
-        )
+_SOURCE_RE = re.compile(r"\[(?:\ucd9c\ucc98|source)\s*:", re.IGNORECASE)
 
-    head = (
-        '<table border="1" cellspacing="0" cellpadding="6" '
-        'style="border-collapse:collapse;width:100%;margin:8px 0">'
-        '<thead><tr style="background:#fafafa">'
-        "<th>Name</th><th>Ticker</th><th>Last close</th>"
-        "<th>Change</th><th>Currency</th><th>Market cap</th><th>Fetched at</th>"
-        "</tr></thead><tbody>"
+
+def _strip_bullet_prefix(line: str) -> str:
+    return re.sub(r"^\s*(?:[-*]\s+|\d+[\.)]\s+)", "", line).strip()
+
+
+def _fallback_source(sources: Iterable[str]) -> str:
+    for source in sources:
+        if source:
+            return str(source)
+    return ""
+
+
+def _with_source_marker(line: str, fallback_source: str = "") -> str:
+    line = _strip_bullet_prefix(line)
+    if not line or _SOURCE_RE.search(line):
+        return line
+    if fallback_source:
+        return f"{line} [\ucd9c\ucc98: {fallback_source}]"
+    return line
+
+
+def _summary_lines(body: str, fallback_source: str = "") -> list[str]:
+    lines = []
+    for raw in (body or "").splitlines():
+        line = _with_source_marker(raw, fallback_source)
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _render_price_trend_toggle(snap: PriceSnapshot, target_price_text: str = "") -> str:
+    position = build_target_position(snap, parse_target_price_value(target_price_text))
+    indicator = (
+        "<p>"
+        f"<strong>{_esc(format_target_position_line(position))}</strong><br>"
+        f"{_esc(format_target_detail_line(position))}"
+        "</p>"
     )
-    body = (
-        "<tr>"
-        f"<td>{_esc(snap.name)}</td>"
-        f"<td>{_esc(snap.ticker)}</td>"
-        f'<td style="text-align:right">{_fmt_num(snap.last_close)}</td>'
-        f'<td style="text-align:right">{_fmt_pct(snap.change_pct)}</td>'
-        f"<td>{_esc(snap.currency)}</td>"
-        f'<td style="text-align:right">{_fmt_num(snap.market_cap, 0)}</td>'
-        f"<td>{_esc(snap.fetched_at)}</td>"
-        "</tr>"
-    )
-    recent_block = ""
     if snap.last_5_closes:
         rows = "".join(
             f'<tr><td>{_esc(row["date"])}</td>'
             f'<td style="text-align:right">{_fmt_num(row["close"])}</td></tr>'
             for row in snap.last_5_closes
         )
-        recent_block = (
-            "<h3>Recent 5 closes</h3>"
+        body = indicator + (
             '<table border="1" cellspacing="0" cellpadding="6" '
             'style="border-collapse:collapse;margin:8px 0">'
-            '<thead><tr style="background:#fafafa"><th>Date</th><th>Close</th></tr></thead>'
+            '<thead><tr style="background:#fafafa"><th>\ub0a0\uc9dc</th><th>\uc885\uac00</th></tr></thead>'
             f"<tbody>{rows}</tbody></table>"
         )
+    else:
+        ticker = snap.ticker or "-"
+        body = indicator + (
+            f"<p>{_esc(ticker)}: {_esc(snap.status)}"
+            f" ({_esc(snap.fetched_at)})</p>"
+        )
 
-    return head + body + "</tbody></table>" + recent_block
+    return (
+        "<details>"
+        "<summary>\uc2e4\uc2dc\uac04 \uc8fc\uac00 \ucd94\uc774</summary>"
+        f"{body}"
+        "</details>"
+    )
+
+
+def _render_bullet_list(lines: list[str]) -> str:
+    if not lines:
+        return '<p style="color:#999">(empty)</p>'
+    return "<ul>" + "".join(f"<li>{_esc(line)}</li>" for line in lines) + "</ul>"
+
+
+def _render_investment_table(summary: Summary, fallback_source: str) -> str:
+    thesis = _summary_lines(summary.thesis, fallback_source)
+    risks = _summary_lines(summary.risks, fallback_source)
+    return (
+        "<h2>\ud22c\uc790 \uc544\uc774\ub514\uc5b4 & \ud22c\uc790 \ub9ac\uc2a4\ud06c</h2>"
+        '<table border="1" cellspacing="0" cellpadding="8" '
+        'style="border-collapse:collapse;width:100%;margin:8px 0;vertical-align:top">'
+        '<thead><tr style="background:#fafafa">'
+        "<th>\ud22c\uc790 \uc544\uc774\ub514\uc5b4(Upside)</th>"
+        "<th>\ud22c\uc790 \ub9ac\uc2a4\ud06c(Downside)</th>"
+        "</tr></thead><tbody><tr>"
+        f'<td style="vertical-align:top;width:50%">{_render_bullet_list(thesis)}</td>'
+        f'<td style="vertical-align:top;width:50%">{_render_bullet_list(risks)}</td>'
+        "</tr></tbody></table>"
+    )
 
 
 def _render_section(title: str, body: str) -> str:
     paragraphs = [p.strip() for p in (body or "").splitlines() if p.strip()]
+    if not paragraphs:
+        return f'<h2>{_esc(title)}</h2><p style="color:#999">(empty)</p>'
+    return f"<h2>{_esc(title)}</h2>" + "".join(f"<p>{_esc(p)}</p>" for p in paragraphs)
+
+
+def _render_cited_section(title: str, body: str, fallback_source: str) -> str:
+    paragraphs = _summary_lines(body, fallback_source)
     if not paragraphs:
         return f'<h2>{_esc(title)}</h2><p style="color:#999">(empty)</p>'
     return f"<h2>{_esc(title)}</h2>" + "".join(f"<p>{_esc(p)}</p>" for p in paragraphs)
@@ -99,28 +152,16 @@ def render_post(summary: Summary, snap: PriceSnapshot, sources: Iterable[str] = 
 
     source_block = ""
     source_items = list(sources)
+    fallback_source = _fallback_source(source_items)
     if source_items:
         items = "".join(f"<li>{_esc(source)}</li>" for source in source_items)
         source_block = f"<h3>Source files</h3><ul>{items}</ul>"
 
-    target_block = ""
-    if summary.target_price:
-        target_block = (
-            '<div style="padding:8px 12px;background:#f5f5f5;'
-            'border-left:4px solid #1976d2;margin:12px 0">'
-            f"<strong>Target price:</strong> {_esc(summary.target_price)}"
-            "</div>"
-        )
-
     return (
         f"<h1>{_esc(title)}</h1>"
         f'<p style="color:#666;font-size:13px">{" | ".join(meta_parts)}</p>'
-        "<h2>Price snapshot</h2>"
-        f"{_render_price_table(snap)}"
-        f"{target_block}"
-        f'{_render_section("Company overview", summary.overview)}'
-        f'{_render_section("Investment thesis", summary.thesis)}'
-        f'{_render_section("Risks", summary.risks)}'
-        f'{_render_section("Conclusion / checkpoints", summary.conclusion)}'
+        f"{_render_price_trend_toggle(snap, summary.target_price)}"
+        f'{_render_cited_section("Company overview", summary.overview, fallback_source)}'
+        f"{_render_investment_table(summary, fallback_source)}"
         f"{source_block}"
     )

@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from price.fetcher import PriceSnapshot
+from price.indicator import (
+    build_target_position,
+    format_target_detail_line,
+    format_target_position_line,
+    parse_target_price_value,
+)
 from summarizer.base import Summary
 
 
@@ -17,6 +23,7 @@ PROP_MARKET = "\uc2dc\uc7a5"
 PROP_PRESENTER = "\ubc1c\ud45c\uc790"
 PROP_MONTH = "\ubc1c\ud45c\uc6d4"
 PROP_SECTOR = "\uc0b0\uc5c5 \uc139\ud130"
+PRICE_TREND_LABEL = "\uc2e4\uc2dc\uac04 \uc8fc\uac00 \ucd94\uc774"
 
 
 @dataclass
@@ -123,6 +130,38 @@ class NotionClient:
         page = self.client.pages.create(parent=parent, properties=properties, children=children[:100])
         return page["id"]
 
+    def list_child_blocks(self, block_id: str) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            payload: dict[str, Any] = {"block_id": block_id, "page_size": 100}
+            if cursor:
+                payload["start_cursor"] = cursor
+            result = self.client.blocks.children.list(**payload)
+            blocks.extend(result.get("results") or [])
+            if not result.get("has_more"):
+                break
+            cursor = result.get("next_cursor")
+            if not cursor:
+                break
+        return blocks
+
+    def archive_block(self, block_id: str) -> None:
+        self.client.blocks.update(block_id=block_id, archived=True)
+
+    def append_blocks(self, block_id: str, children: list[dict[str, Any]]) -> None:
+        self.client.blocks.children.append(block_id=block_id, children=children[:100])
+
+    def replace_price_trend_toggle(self, page_id: str, toggle_block: dict[str, Any]) -> None:
+        for block in self.list_child_blocks(page_id):
+            if block.get("type") != "toggle":
+                continue
+            if _plain_text(block.get("toggle", {}).get("rich_text", [])) == PRICE_TREND_LABEL:
+                block_id = str(block.get("id") or "")
+                if block_id:
+                    self.archive_block(block_id)
+        self.append_blocks(page_id, [toggle_block])
+
 
 def target_from_config(config: dict[str, Any]) -> NotionTarget | None:
     notion = (config.get("automation", {}) or {}).get("notion", {}) or config.get("notion", {}) or {}
@@ -152,8 +191,23 @@ def _rich_text(text: str) -> list[dict[str, Any]]:
     return [{"text": {"content": text[:2000]}}]
 
 
+def _plain_text(rich_text: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for item in rich_text or []:
+        parts.append(str(item.get("plain_text") or item.get("text", {}).get("content") or ""))
+    return "".join(parts)
+
+
 def _paragraph(text: str) -> dict[str, Any]:
     return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": _rich_text(text)}}
+
+
+def _toggle(text: str, children: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "toggle",
+        "toggle": {"rich_text": _rich_text(text), "children": children},
+    }
 
 
 def _bulleted_item(text: str) -> dict[str, Any]:
@@ -193,6 +247,81 @@ def _blocks_from_markdown_lines(text: str) -> list[dict[str, Any]]:
             else:
                 blocks.append(_paragraph(line))
     return blocks
+
+
+_SOURCE_RE = re.compile(r"\[(?:\ucd9c\ucc98|source)\s*:", re.IGNORECASE)
+
+
+def _strip_bullet_prefix(line: str) -> str:
+    return re.sub(r"^\s*(?:[-*]\s+|\d+[\.)]\s+)", "", line).strip()
+
+
+def _fallback_source(sources: list[str]) -> str:
+    for source in sources:
+        if source:
+            return source
+    return ""
+
+
+def _with_source_marker(line: str, fallback_source: str = "") -> str:
+    line = _strip_bullet_prefix(line)
+    if not line or _SOURCE_RE.search(line):
+        return line
+    if fallback_source:
+        return f"{line} [\ucd9c\ucc98: {fallback_source}]"
+    return line
+
+
+def _summary_lines(text: str, fallback_source: str = "") -> list[str]:
+    lines: list[str] = []
+    for raw in (text or "").splitlines():
+        line = _with_source_marker(raw, fallback_source)
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _blocks_from_cited_lines(text: str, fallback_source: str = "") -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for line in _summary_lines(text, fallback_source):
+        if line[:2] in {"- ", "* "}:
+            blocks.append(_bulleted_item(line[2:].strip()))
+        else:
+            blocks.append(_paragraph(line))
+    return blocks or [_paragraph("(empty)")]
+
+
+def _table_row(cells: list[str]) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "table_row",
+        "table_row": {"cells": [_rich_text(cell) for cell in cells]},
+    }
+
+
+def _investment_table(summary: Summary, fallback_source: str) -> dict[str, Any]:
+    thesis = _summary_lines(summary.thesis, fallback_source)
+    risks = _summary_lines(summary.risks, fallback_source)
+    thesis_cell = "\n".join(f"- {line}" for line in thesis) or "(empty)"
+    risks_cell = "\n".join(f"- {line}" for line in risks) or "(empty)"
+    return {
+        "object": "block",
+        "type": "table",
+        "table": {
+            "table_width": 2,
+            "has_column_header": True,
+            "has_row_header": False,
+            "children": [
+                _table_row(
+                    [
+                        "\ud22c\uc790 \uc544\uc774\ub514\uc5b4(Upside)",
+                        "\ud22c\uc790 \ub9ac\uc2a4\ud06c(Downside)",
+                    ]
+                ),
+                _table_row([thesis_cell, risks_cell]),
+            ],
+        },
+    }
 
 
 def _rich_text_property(text: str) -> dict[str, Any]:
@@ -266,36 +395,41 @@ def _fmt_money(value: float | None, currency: str | None = None) -> str:
     return f"{text} {unit}".strip()
 
 
+def price_trend_toggle_block(snap: PriceSnapshot, target_price_text: str = "") -> dict[str, Any]:
+    position = build_target_position(snap, parse_target_price_value(target_price_text))
+    children: list[dict[str, Any]] = [
+        _paragraph(format_target_position_line(position)),
+        _paragraph(format_target_detail_line(position)),
+    ]
+    if snap.last_5_closes:
+        children.extend(
+            _bulleted_item(f"{row.get('date', '-')}: {row.get('close', '-')}")
+            for row in snap.last_5_closes
+        )
+    else:
+        ticker = snap.ticker or "-"
+        children.append(_paragraph(f"{ticker}: {snap.status} ({snap.fetched_at})"))
+    return _toggle(PRICE_TREND_LABEL, children)
+
+
 def blocks_for_post(summary: Summary, snap: PriceSnapshot, sources: list[str]) -> list[dict[str, Any]]:
     title = summary.company or "Untitled"
     if summary.ticker:
         title += f" ({summary.ticker})"
 
-    price_line = f"{snap.ticker or summary.ticker or '-'}: {snap.status}"
-    if snap.status == "ok":
-        price_line = (
-            f"{snap.ticker}: last {snap.last_close}, change {snap.change_pct}%, "
-            f"currency {snap.currency or '-'}, market cap {_fmt_money(snap.market_cap, snap.currency)}"
-        )
+    fallback_source = _fallback_source(sources)
 
     blocks: list[dict[str, Any]] = [
         _heading(1, title),
         _paragraph(f"Presenter: {summary.presenter or '-'}"),
         _paragraph(f"Presentation month: {summary.presentation_month or '-'}"),
-        _heading(2, "\uc8fc\uac00 \uc815\ubcf4"),
-        _paragraph(price_line),
+        price_trend_toggle_block(snap, summary.target_price),
     ]
-    if summary.target_price:
-        blocks.append(_paragraph(f"Target price: {summary.target_price}"))
 
-    for heading, body in [
-        ("\uae30\uc5c5 \uac1c\uc694", summary.overview),
-        ("\ud22c\uc790 \uc544\uc774\ub514\uc5b4", summary.thesis),
-        ("\ud22c\uc790 \ub9ac\uc2a4\ud06c", summary.risks),
-        ("\uacb0\ub860/\uccb4\ud06c\ud3ec\uc778\ud2b8", summary.conclusion),
-    ]:
-        blocks.append(_heading(2, heading))
-        blocks.extend(_blocks_from_markdown_lines(body))
+    blocks.append(_heading(2, "\uae30\uc5c5 \uac1c\uc694"))
+    blocks.extend(_blocks_from_cited_lines(summary.overview, fallback_source))
+    blocks.append(_heading(2, "\ud22c\uc790 \uc544\uc774\ub514\uc5b4 & \ud22c\uc790 \ub9ac\uc2a4\ud06c"))
+    blocks.append(_investment_table(summary, fallback_source))
 
     if sources:
         blocks.append(_heading(3, "Source files"))
