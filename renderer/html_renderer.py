@@ -14,6 +14,7 @@ from price.indicator import (
     parse_target_price_value,
 )
 from summarizer.base import Summary
+from summarizer.overview import normalize_overview_lines
 
 
 def _esc(value: str | None) -> str:
@@ -140,6 +141,11 @@ def _render_cited_section(title: str, body: str, fallback_source: str) -> str:
     return f"<h2>{_esc(title)}</h2>" + "".join(f"<p>{_esc(p)}</p>" for p in paragraphs)
 
 
+def _render_overview_section(body: str, fallback_source: str) -> str:
+    paragraphs = normalize_overview_lines(body, fallback_source)
+    return "<h2>Company overview</h2>" + "".join(f"<p>{_esc(p)}</p>" for p in paragraphs)
+
+
 def render_post(summary: Summary, snap: PriceSnapshot, sources: Iterable[str] = ()) -> str:
     title = summary.company or "(unknown company)"
     if summary.ticker or snap.ticker:
@@ -161,7 +167,7 @@ def render_post(summary: Summary, snap: PriceSnapshot, sources: Iterable[str] = 
         f"<h1>{_esc(title)}</h1>"
         f'<p style="color:#666;font-size:13px">{" | ".join(meta_parts)}</p>'
         f"{_render_price_trend_toggle(snap, summary.target_price)}"
-        f'{_render_cited_section("Company overview", summary.overview, fallback_source)}'
+        f"{_render_overview_section(summary.overview, fallback_source)}"
         f"{_render_investment_table(summary, fallback_source)}"
         f"{source_block}"
     )

@@ -17,15 +17,20 @@ Rules:
 - Write Korean unless the source itself is English-only.
 - Write for developers and investment study members: prioritize numbers, dates, quantities, product names, contracts, margins, capacity, revenue, valuation, and other verifiable facts.
 - Avoid vague adjectives such as "strong", "positive", "promising", or "significant" unless the source provides numeric evidence.
-- Every summary sentence or bullet line must end with a source marker in this form: [출처: file name p.N], [출처: file name Slide N], or [출처: file name].
+- Every summary sentence or bullet line must end with a source marker in this form: [\ucd9c\ucc98: file name/p.N], [\ucd9c\ucc98: file name/Slide N], or [\ucd9c\ucc98: file name].
 - For PPT/PDF evidence, preserve the nearest source location from markers such as "### File: name", "--- Slide N ---", and "--- Page N ---".
+- Make company overview exactly 3 newline-separated lines in this order:
+  1. "\ud575\uc2ec BM: ..." - industry, core products, and target market.
+  2. "\uc2dc\uc7a5 \uc9c0\uc704: ..." - market share trend, peer group for valuation comparison, customer relationship, exclusivity, or vendor status if present.
+  3. "\uc131\uc7a5 \ubaa8\uba58\ud140: ..." - technical differentiation, profitability, patents, plant completion, mass production, or key schedule over the next 1-2 years if present.
+- Each company overview line must be 1-2 factual sentences and end with a source marker. If the source does not mention a required viewpoint, write "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c" for that line with the best available source marker.
 - Make investment thesis exactly 3 concise bullet-like lines, separated by newlines.
 - Make risks exactly 3 concise bullet-like lines, separated by newlines.
 - Do not write a conclusion or checkpoints section.
 - Return JSON only. Do not wrap it in markdown fences.
 
 {{
-  "overview": "Company overview: core business model, products/services, market position, and key numeric facts. End every sentence with a source marker.",
+  "overview": "Exactly 3 newline-separated Korean lines: \ud575\uc2ec BM, \uc2dc\uc7a5 \uc9c0\uc704, \uc131\uc7a5 \ubaa8\uba58\ud140. Each line is 1-2 factual sentences and ends with [\ucd9c\ucc98: file name/p.N]. Use \uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c if not present in the source.",
   "thesis": "Investment ideas: exactly 3 upside drivers or catalysts, separated by newlines. Each line is a bullet-style fact summary and ends with a source marker.",
   "risks": "Investment risks: exactly 3 downside or fundamental-damage risks, separated by newlines. Each line is a bullet-style fact summary and ends with a source marker.",
   "conclusion": "",

@@ -14,6 +14,7 @@ from price.indicator import (
     parse_target_price_value,
 )
 from summarizer.base import Summary
+from summarizer.overview import normalize_overview_lines
 
 
 NOTION_VERSION = "2022-06-28"
@@ -333,6 +334,10 @@ def _blocks_from_cited_lines(text: str, fallback_source: str = "") -> list[dict[
     return blocks or [_paragraph("(empty)")]
 
 
+def _blocks_from_overview_lines(text: str, fallback_source: str = "") -> list[dict[str, Any]]:
+    return [_paragraph(line) for line in normalize_overview_lines(text, fallback_source)]
+
+
 def _table_row(cells: list[str]) -> dict[str, Any]:
     return {
         "object": "block",
@@ -512,7 +517,7 @@ def blocks_for_post(summary: Summary, snap: PriceSnapshot, sources: list[str]) -
     ]
 
     blocks.append(_heading(2, "\uae30\uc5c5 \uac1c\uc694"))
-    blocks.extend(_blocks_from_cited_lines(summary.overview, fallback_source))
+    blocks.extend(_blocks_from_overview_lines(summary.overview, fallback_source))
     blocks.append(_heading(2, "\ud22c\uc790 \uc544\uc774\ub514\uc5b4 & \ud22c\uc790 \ub9ac\uc2a4\ud06c"))
     blocks.append(_investment_table(summary, fallback_source))
 

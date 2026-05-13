@@ -15,6 +15,10 @@ PRICE_INFO = "\uc8fc\uac00 \uc815\ubcf4"
 CONCLUSION = "\uacb0\ub860"
 REMOVED_CONCLUSION = "\uc0ad\uc81c\ub418\uc5b4\uc57c \ud558\ub294 \uacb0\ub860"
 TARGET_POSITION = "\ubaa9\ud45c\uac00 \ub300\ube44 \uc704\uce58"
+CORE_BM = "\ud575\uc2ec BM"
+MARKET_POSITION = "\uc2dc\uc7a5 \uc9c0\uc704"
+GROWTH_MOMENTUM = "\uc131\uc7a5 \ubaa8\uba58\ud140"
+NO_INFO = "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c"
 
 
 class ReportRenderingTests(unittest.TestCase):
@@ -48,6 +52,10 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn(f"<details><summary>{TREND_LABEL}</summary>", html)
         self.assertIn(TARGET_POSITION, html)
         self.assertIn("50.0%", html)
+        self.assertIn(CORE_BM, html)
+        self.assertIn(MARKET_POSITION, html)
+        self.assertIn(GROWTH_MOMENTUM, html)
+        self.assertIn(NO_INFO, html)
         self.assertIn(SOURCE_MARKER, html)
         self.assertNotIn("Conclusion / checkpoints", html)
         self.assertNotIn(REMOVED_CONCLUSION, html)
@@ -64,6 +72,10 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn(TREND_LABEL, serialized)
         self.assertIn(TARGET_POSITION, serialized)
         self.assertIn("50.0%", serialized)
+        self.assertIn(CORE_BM, serialized)
+        self.assertIn(MARKET_POSITION, serialized)
+        self.assertIn(GROWTH_MOMENTUM, serialized)
+        self.assertIn(NO_INFO, serialized)
         self.assertIn(IDEA_LABEL, serialized)
         self.assertIn(RISK_LABEL, serialized)
         self.assertIn(SOURCE_MARKER, serialized)
@@ -74,7 +86,10 @@ class ReportRenderingTests(unittest.TestCase):
     def test_llm_prompt_requires_citations_and_omits_conclusion(self) -> None:
         prompt = PROMPT_TEMPLATE.format(company="A Corp", ticker="000001.KS", body="### File: deck.pdf")
 
-        self.assertIn("[\ucd9c\ucc98: file name p.N]", prompt)
+        self.assertIn("[\ucd9c\ucc98: file name/p.N]", prompt)
+        self.assertIn(CORE_BM, prompt)
+        self.assertIn(MARKET_POSITION, prompt)
+        self.assertIn(GROWTH_MOMENTUM, prompt)
         self.assertIn("exactly 3 concise bullet-like lines", prompt)
         self.assertIn('"conclusion": ""', prompt)
         self.assertIn("Do not write a conclusion or checkpoints section.", prompt)
