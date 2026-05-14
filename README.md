@@ -49,9 +49,10 @@ Generated reports now use this structure:
 
 The old `결론/체크포인트` section is intentionally omitted.
 
-LLM summaries are prompted to use fact-first Korean suitable for developer and
-investment-study readers. Investment ideas and risks are three concise bullet
-lines each, and summary lines should end with source markers such as:
+LLM summaries use Claude document citations and fact-first Korean suitable for
+developer and investment-study readers. Investment ideas and risks are not fixed
+to three items; the tool keeps only items supported by the materials. Summary
+lines should carry source markers such as:
 
 ```text
 [출처: deck.pdf p.12]
@@ -59,8 +60,8 @@ lines each, and summary lines should end with source markers such as:
 [출처: notes.txt]
 ```
 
-If the LLM or rule-based summary does not include a source marker, renderers add
-a fallback marker using the first source file.
+Renderers do not invent fallback source markers. If LLM citation validation
+fails, the report is skipped and debug details are written under `output/debug/`.
 
 ## Price Trend Toggle
 
@@ -187,6 +188,10 @@ any LLM calls are made. Use `--force` to reprocess a report intentionally.
 Useful fields:
 
 - `presentations`: explicit manual list of sources for `run`
+- `summarizer.model`: Claude model for LLM summaries, default config uses Sonnet
+- `summarizer.sector_model`: cheaper model for Notion sector classification
+- `summarizer.max_retries`: citation/format repair attempts for LLM summaries
+- `summarizer.debug_dir`: where failed LLM responses and validation details are saved
 - `automation.ticker_map`: folder/name keyword to yfinance ticker mapping
 - `automation.notion.parent_page_id`: create pages below a Notion page
 - `automation.notion.database_id`: create pages inside a Notion database

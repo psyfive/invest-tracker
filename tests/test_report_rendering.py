@@ -4,7 +4,7 @@ from automation.notion import blocks_for_post
 from price import PriceSnapshot
 from renderer import render_post
 from summarizer.base import Summary
-from summarizer.llm_based import PROMPT_TEMPLATE
+from summarizer.llm_based import SUMMARY_PROMPT
 
 
 IDEA_LABEL = "\ud22c\uc790 \uc544\uc774\ub514\uc5b4(Upside)"
@@ -28,9 +28,13 @@ class ReportRenderingTests(unittest.TestCase):
             ticker="000001.KS",
             presenter="Kim",
             presentation_month="26.04",
-            overview="ESS \ub0c9\uac01 \ubd80\ud488\uc744 \uacf5\uae09\ud55c\ub2e4.",
-            thesis="- \uc218\ub0c9\uc2dd \ub0c9\uac01 \uc2dc\uc2a4\ud15c \ub9e4\ucd9c \ube44\uc911 40%",
-            risks="- \uace0\uac1d\uc0ac \ubc1c\uc8fc \uc9c0\uc5f0 \uc2dc \ub9e4\ucd9c \uc778\uc2dd \uc9c0\uc5f0",
+            overview=(
+                f"{CORE_BM}: ESS \ub0c9\uac01 \ubd80\ud488\uc744 \uacf5\uae09\ud55c\ub2e4. {SOURCE_MARKER}\n"
+                f"{MARKET_POSITION}: {NO_INFO}\n"
+                f"{GROWTH_MOMENTUM}: 2026\ub144 \uc591\uc0b0 \uc608\uc815 {SOURCE_MARKER}"
+            ),
+            thesis=f"- \uc218\ub0c9\uc2dd \ub0c9\uac01 \uc2dc\uc2a4\ud15c \ub9e4\ucd9c \ube44\uc911 40% {SOURCE_MARKER}",
+            risks=f"- \uace0\uac1d\uc0ac \ubc1c\uc8fc \uc9c0\uc5f0 \uc2dc \ub9e4\ucd9c \uc778\uc2dd \uc9c0\uc5f0 {SOURCE_MARKER}",
             conclusion=REMOVED_CONCLUSION,
             target_price="2,000\uc6d0",
         )
@@ -83,16 +87,33 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertNotIn(CONCLUSION, serialized)
         self.assertNotIn(REMOVED_CONCLUSION, serialized)
 
-    def test_llm_prompt_requires_citations_and_omits_conclusion(self) -> None:
-        prompt = PROMPT_TEMPLATE.format(company="A Corp", ticker="000001.KS", body="### File: deck.pdf")
+    def test_html_does_not_invent_source_markers(self) -> None:
+        summary = Summary(
+            company="A Corp",
+            ticker="000001.KS",
+            overview="ESS \ub0c9\uac01 \ubd80\ud488\uc744 \uacf5\uae09\ud55c\ub2e4.",
+            thesis="- \uc218\ub0c9\uc2dd \ub0c9\uac01 \uc2dc\uc2a4\ud15c",
+            risks="- \uace0\uac1d\uc0ac \ubc1c\uc8fc \uc9c0\uc5f0",
+        )
 
-        self.assertIn("[\ucd9c\ucc98: file name/p.N]", prompt)
+        html = render_post(summary, self.snap, sources=["voice.docx"])
+
+        self.assertNotIn("[\ucd9c\ucc98: voice.docx]", html)
+
+    def test_llm_prompt_requires_citations_and_variable_item_counts(self) -> None:
+        prompt = SUMMARY_PROMPT.format(
+            company="A Corp",
+            ticker="000001.KS",
+            presenter="Kim",
+            presentation_month="26.04",
+        )
+
         self.assertIn(CORE_BM, prompt)
         self.assertIn(MARKET_POSITION, prompt)
         self.assertIn(GROWTH_MOMENTUM, prompt)
-        self.assertIn("exactly 3 concise bullet-like lines", prompt)
-        self.assertIn('"conclusion": ""', prompt)
-        self.assertIn("Do not write a conclusion or checkpoints section.", prompt)
+        self.assertIn("are not fixed to 3 items", prompt)
+        self.assertIn("Every factual bullet or factual sentence must be grounded", prompt)
+        self.assertIn("Do not output JSON", prompt)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,10 @@ csv_path: output/prices.csv
 
 summarizer:
   mode: rule
-  model: claude-haiku-4-5-20251001
+  model: claude-sonnet-4-6
+  sector_model: claude-haiku-4-5-20251001
+  max_retries: 1
+  debug_dir: output/debug
 
 # Static inputs still work with:
 #   python main.py run -c config.yaml

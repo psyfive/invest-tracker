@@ -198,11 +198,24 @@ def _gather_text(file_paths: list[str], base_dir: Path) -> tuple[str, list[str]]
     return "\n\n".join(chunks), used
 
 
+def _resolve_source_paths(file_paths: list[str], base_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    for file_path in file_paths:
+        path = Path(file_path)
+        if not path.is_absolute():
+            path = (base_dir / path).resolve()
+        if path.exists():
+            paths.append(path)
+    return paths
+
+
 def _target_price_text_from_source(text: str, fallback: str = "") -> str:
+    if fallback.strip():
+        return fallback.strip()
     target = extract_target_price(text)
     if target is not None:
         return target.display
-    return fallback.strip()
+    return ""
 
 
 def process_config(
@@ -221,14 +234,19 @@ def process_config(
     summ_cfg = config.get("summarizer", {}) or {}
     mode = mode_override or summ_cfg.get("mode", "rule")
     summ_kwargs: dict[str, Any] = {}
-    if mode == "llm" and "model" in summ_cfg:
-        summ_kwargs["model"] = summ_cfg["model"]
+    if mode == "llm":
+        if "model" in summ_cfg:
+            summ_kwargs["model"] = summ_cfg["model"]
+        if "max_retries" in summ_cfg:
+            summ_kwargs["max_retries"] = int(summ_cfg["max_retries"])
+        debug_dir = summ_cfg.get("debug_dir", output_dir / "debug")
+        summ_kwargs["debug_dir"] = str(_resolve_config_path(base_dir, debug_dir, "output/debug"))
     summarizer = get_summarizer(mode, **summ_kwargs)
     print(f"[config] summarizer mode: {mode}")
 
     sector_classifier: SectorClassifier | None = None
     if classify_sector:
-        sector_classifier = SectorClassifier(model=summ_cfg.get("model", "claude-sonnet-4-5"))
+        sector_classifier = SectorClassifier(model=summ_cfg.get("sector_model", "claude-haiku-4-5-20251001"))
 
     presentations = config.get("presentations", []) or []
     if presenter_filter:
@@ -255,13 +273,23 @@ def process_config(
             print(f"  [warning] no readable text from {files}")
 
         try:
-            summary = summarizer.summarize(
-                text,
-                company=company,
-                ticker=ticker,
-                presenter=presenter,
-                presentation_month=presentation_month,
-            )
+            if mode == "llm" and hasattr(summarizer, "summarize_files"):
+                source_paths = _resolve_source_paths(files, base_dir)
+                summary = summarizer.summarize_files(
+                    source_paths,
+                    company=company,
+                    ticker=ticker,
+                    presenter=presenter,
+                    presentation_month=presentation_month,
+                )
+            else:
+                summary = summarizer.summarize(
+                    text,
+                    company=company,
+                    ticker=ticker,
+                    presenter=presenter,
+                    presentation_month=presentation_month,
+                )
         except Exception as e:
             print(f"  [error] summarize failed: {e}", file=sys.stderr)
             continue

@@ -25,7 +25,9 @@ def _fallback_source_marker(fallback_source: str) -> str:
 def _ensure_source_marker(line: str, fallback_source: str) -> str:
     if SOURCE_RE.search(line):
         return line
-    return f"{line} {_fallback_source_marker(fallback_source)}"
+    if fallback_source:
+        return f"{line} {_fallback_source_marker(fallback_source)}"
+    return line
 
 
 def _split_label(line: str) -> tuple[str | None, str]:
@@ -39,7 +41,7 @@ def _split_label(line: str) -> tuple[str | None, str]:
 
 
 def normalize_overview_lines(text: str, fallback_source: str = "") -> list[str]:
-    """Return exactly three labeled overview lines with source markers."""
+    """Return overview lines without inventing unsupported viewpoints."""
     labeled: dict[str, str] = {}
     unlabeled: list[str] = []
 
@@ -54,13 +56,13 @@ def normalize_overview_lines(text: str, fallback_source: str = "") -> list[str]:
             unlabeled.append(content)
 
     lines: list[str] = []
-    for index, label in enumerate(OVERVIEW_LABELS):
+    for label in OVERVIEW_LABELS:
         content = labeled.get(label)
-        if not content and index < len(unlabeled):
-            content = unlabeled[index]
-        if not content:
-            content = NO_INFO
+        if content:
+            line = f"{label}: {content}"
+            lines.append(_ensure_source_marker(line, fallback_source))
 
-        line = f"{label}: {content}"
-        lines.append(_ensure_source_marker(line, fallback_source))
-    return lines
+    for content in unlabeled:
+        lines.append(_ensure_source_marker(content, fallback_source))
+
+    return lines or [NO_INFO]

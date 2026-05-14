@@ -55,8 +55,6 @@ def _with_source_marker(line: str, fallback_source: str = "") -> str:
     line = _strip_bullet_prefix(line)
     if not line or _SOURCE_RE.search(line):
         return line
-    if fallback_source:
-        return f"{line} [\ucd9c\ucc98: {fallback_source}]"
     return line
 
 
@@ -111,8 +109,8 @@ def _render_bullet_list(lines: list[str]) -> str:
 
 
 def _render_investment_table(summary: Summary, fallback_source: str) -> str:
-    thesis = _summary_lines(summary.thesis, fallback_source)
-    risks = _summary_lines(summary.risks, fallback_source)
+    thesis = _summary_lines(summary.thesis, "")
+    risks = _summary_lines(summary.risks, "")
     return (
         "<h2>\ud22c\uc790 \uc544\uc774\ub514\uc5b4 & \ud22c\uc790 \ub9ac\uc2a4\ud06c</h2>"
         '<table border="1" cellspacing="0" cellpadding="8" '
@@ -142,7 +140,7 @@ def _render_cited_section(title: str, body: str, fallback_source: str) -> str:
 
 
 def _render_overview_section(body: str, fallback_source: str) -> str:
-    paragraphs = normalize_overview_lines(body, fallback_source)
+    paragraphs = normalize_overview_lines(body, "")
     return "<h2>Company overview</h2>" + "".join(f"<p>{_esc(p)}</p>" for p in paragraphs)
 
 
@@ -158,7 +156,6 @@ def render_post(summary: Summary, snap: PriceSnapshot, sources: Iterable[str] = 
 
     source_block = ""
     source_items = list(sources)
-    fallback_source = _fallback_source(source_items)
     if source_items:
         items = "".join(f"<li>{_esc(source)}</li>" for source in source_items)
         source_block = f"<h3>Source files</h3><ul>{items}</ul>"
@@ -167,7 +164,7 @@ def render_post(summary: Summary, snap: PriceSnapshot, sources: Iterable[str] = 
         f"<h1>{_esc(title)}</h1>"
         f'<p style="color:#666;font-size:13px">{" | ".join(meta_parts)}</p>'
         f"{_render_price_trend_toggle(snap, summary.target_price)}"
-        f"{_render_overview_section(summary.overview, fallback_source)}"
-        f"{_render_investment_table(summary, fallback_source)}"
+        f"{_render_overview_section(summary.overview, '')}"
+        f"{_render_investment_table(summary, '')}"
         f"{source_block}"
     )

@@ -31,19 +31,12 @@ class OverviewNormalizationTests(unittest.TestCase):
     def test_single_paragraph_is_normalized_and_missing_lines_are_filled(self) -> None:
         lines = normalize_overview_lines("ESS \ub0c9\uac01 \ubd80\ud488\uc744 \uacf5\uae09\ud55c\ub2e4.", "deck.pdf")
 
-        self.assertEqual(len(lines), 3)
-        self.assertIn(CORE_BM, lines[0])
-        self.assertIn(MARKET_POSITION, lines[1])
-        self.assertIn(GROWTH_MOMENTUM, lines[2])
-        self.assertIn(NO_INFO, lines[1])
-        self.assertIn(NO_INFO, lines[2])
-        self.assertTrue(all("[\ucd9c\ucc98: deck.pdf]" in line for line in lines))
+        self.assertEqual(lines, ["ESS \ub0c9\uac01 \ubd80\ud488\uc744 \uacf5\uae09\ud55c\ub2e4. [\ucd9c\ucc98: deck.pdf]"])
 
     def test_missing_source_uses_source_unavailable_marker(self) -> None:
         lines = normalize_overview_lines("", "")
 
-        self.assertEqual(len(lines), 3)
-        self.assertTrue(all("[\ucd9c\ucc98: source unavailable]" in line for line in lines))
+        self.assertEqual(lines, [NO_INFO])
 
 
 if __name__ == "__main__":

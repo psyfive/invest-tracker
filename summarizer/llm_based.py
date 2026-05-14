@@ -1,81 +1,395 @@
-"""LLM-backed summarizer with rule-based fallback."""
+"""LLM-backed summarizer using Claude document citations."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from readers import read_file
 
 from .base import Summary, Summarizer
-from .rule_based import RuleBasedSummarizer
 
 
-PROMPT_TEMPLATE = """You are an assistant analyst for Korean stock study notes.
-Read the presentation text below and summarize {company} ({ticker}) into this exact JSON schema.
+OVERVIEW_HEADING = "기업 개요"
+THESIS_HEADING = "투자 아이디어"
+RISKS_HEADING = "투자 리스크"
+TARGET_HEADING = "목표가"
+SOURCE_RE = re.compile(r"\[(?:출처|source)\s*:", re.IGNORECASE)
+
+SUMMARY_PROMPT = """You are an assistant analyst for a Korean investment study.
+Use only the provided documents. Do not infer facts that are not in the materials.
+
+Write in Korean unless the source itself is English-only.
+Prefer concrete facts: numbers, dates, quantities, products, customers, contracts,
+capacity, revenue, margins, valuation, and explicit schedules.
+
+Return exactly these section headings and no extra sections:
+
+## 기업 개요
+- 핵심 BM: ...
+- 시장 지위: ...
+- 성장 모멘텀: ...
+
+## 투자 아이디어
+- ...
+
+## 투자 리스크
+- ...
+
+## 목표가
+- ...
 
 Rules:
-- Use only information present in the source text.
-- Write Korean unless the source itself is English-only.
-- Write for developers and investment study members: prioritize numbers, dates, quantities, product names, contracts, margins, capacity, revenue, valuation, and other verifiable facts.
-- Avoid vague adjectives such as "strong", "positive", "promising", or "significant" unless the source provides numeric evidence.
-- Every summary sentence or bullet line must end with a source marker in this form: [\ucd9c\ucc98: file name/p.N], [\ucd9c\ucc98: file name/Slide N], or [\ucd9c\ucc98: file name].
-- For PPT/PDF evidence, preserve the nearest source location from markers such as "### File: name", "--- Slide N ---", and "--- Page N ---".
-- Make company overview exactly 3 newline-separated lines in this order:
-  1. "\ud575\uc2ec BM: ..." - industry, core products, and target market.
-  2. "\uc2dc\uc7a5 \uc9c0\uc704: ..." - market share trend, peer group for valuation comparison, customer relationship, exclusivity, or vendor status if present.
-  3. "\uc131\uc7a5 \ubaa8\uba58\ud140: ..." - technical differentiation, profitability, patents, plant completion, mass production, or key schedule over the next 1-2 years if present.
-- Each company overview line must be 1-2 factual sentences and end with a source marker. If the source does not mention a required viewpoint, write "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c" for that line with the best available source marker.
-- Make investment thesis exactly 3 concise bullet-like lines, separated by newlines.
-- Make risks exactly 3 concise bullet-like lines, separated by newlines.
-- Do not write a conclusion or checkpoints section.
-- Return JSON only. Do not wrap it in markdown fences.
+- 기업 개요 should use 핵심 BM, 시장 지위, 성장 모멘텀 when the materials support them.
+- If one of those viewpoints is not supported, write "자료 내 명시 없음" for that viewpoint or omit it.
+- 투자 아이디어 and 투자 리스크 are not fixed to 3 items. Include only supported items from the materials.
+- If no supported investment idea or risk exists, write "자료 내 명시 없음" in that section.
+- Every factual bullet or factual sentence must be grounded in document citations.
+- Do not mention a source unless the cited document actually supports the claim.
+- Do not output JSON or markdown fences.
 
-{{
-  "overview": "Exactly 3 newline-separated Korean lines: \ud575\uc2ec BM, \uc2dc\uc7a5 \uc9c0\uc704, \uc131\uc7a5 \ubaa8\uba58\ud140. Each line is 1-2 factual sentences and ends with [\ucd9c\ucc98: file name/p.N]. Use \uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c if not present in the source.",
-  "thesis": "Investment ideas: exactly 3 upside drivers or catalysts, separated by newlines. Each line is a bullet-style fact summary and ends with a source marker.",
-  "risks": "Investment risks: exactly 3 downside or fundamental-damage risks, separated by newlines. Each line is a bullet-style fact summary and ends with a source marker.",
-  "conclusion": "",
-  "target_price": "Target price or upside, including unit, if present."
-}}
+Company: {company}
+Ticker: {ticker}
+Presenter: {presenter}
+Presentation month: {presentation_month}
+"""
 
-[SOURCE START]
-{body}
-[SOURCE END]
+REPAIR_PROMPT = """The previous answer failed validation:
+{errors}
+
+Rewrite the summary using the same required headings. Keep only claims supported by
+the cited documents. Every factual bullet or sentence must have citations.
+Do not output JSON or markdown fences.
 """
 
 
-def _strip_code_fence(text: str) -> str:
-    text = text.strip()
-    fence = re.match(r"^```(?:json)?\s*(.+?)\s*```$", text, flags=re.DOTALL)
-    if fence:
-        return fence.group(1).strip()
-    return text
+@dataclass
+class SourceDocument:
+    title: str
+    content_block: dict[str, Any]
+    block_labels: list[str]
 
 
-def _truncate_for_prompt(text: str, max_chars: int = 18000) -> str:
-    if len(text) <= max_chars:
-        return text
-    head = text[: max_chars // 2]
-    tail = text[-max_chars // 2 :]
-    return f"{head}\n\n...[middle omitted]...\n\n{tail}"
+@dataclass
+class CitationText:
+    text: str
+    citations: list[Any]
+
+
+def _strip_bullet_prefix(line: str) -> str:
+    return re.sub(r"^\s*(?:[-*]\s+|\d+[\.)]\s+)", "", line).strip()
+
+
+def _heading_key(line: str) -> str:
+    line = line.strip()
+    line = re.sub(r"^#+\s*", "", line)
+    line = _strip_bullet_prefix(line)
+    line = line.rstrip(":：").strip()
+    normalized = re.sub(r"\s+", "", line)
+    if normalized in {"기업개요", "회사개요", "개요"}:
+        return "overview"
+    if normalized in {"투자아이디어", "투자아이디어(Upside)", "Upside", "투자포인트"}:
+        return "thesis"
+    if normalized in {"투자리스크", "투자리스크(Downside)", "Downside", "리스크"}:
+        return "risks"
+    if normalized in {"목표가", "목표주가", "타겟프라이스", "TargetPrice"}:
+        return "target_price"
+    return ""
+
+
+def _is_section_heading(line: str) -> bool:
+    return bool(_heading_key(line))
+
+
+def _has_source(line: str) -> bool:
+    return bool(SOURCE_RE.search(line))
+
+
+def _is_no_info(line: str) -> bool:
+    return "자료 내 명시 없음" in line or "(empty)" in line
+
+
+def _citation_value(citation: Any, name: str, default: Any = None) -> Any:
+    if isinstance(citation, dict):
+        return citation.get(name, default)
+    return getattr(citation, name, default)
+
+
+def _citation_source(citation: Any, documents: list[SourceDocument]) -> str:
+    citation_type = str(_citation_value(citation, "type", ""))
+    doc_index = _citation_value(citation, "document_index", None)
+    try:
+        doc_index_int = int(doc_index)
+    except (TypeError, ValueError):
+        doc_index_int = -1
+
+    title = str(_citation_value(citation, "document_title", "") or "")
+    if 0 <= doc_index_int < len(documents):
+        title = title or documents[doc_index_int].title
+
+    if citation_type == "page_location":
+        page = _citation_value(citation, "start_page_number", None)
+        return f"{title}/p.{page}" if page is not None else title
+
+    if citation_type == "content_block_location":
+        block_index = _citation_value(citation, "start_block_index", None)
+        try:
+            block_index_int = int(block_index)
+        except (TypeError, ValueError):
+            block_index_int = -1
+        if 0 <= doc_index_int < len(documents):
+            labels = documents[doc_index_int].block_labels
+            if 0 <= block_index_int < len(labels):
+                return labels[block_index_int]
+        return title
+
+    return title
+
+
+def _source_marker(citations: list[Any], documents: list[SourceDocument]) -> str:
+    sources: list[str] = []
+    for citation in citations:
+        source = _citation_source(citation, documents).strip()
+        if source and source not in sources:
+            sources.append(source)
+    if not sources:
+        return ""
+    return f"[출처: {'; '.join(sources)}]"
+
+
+def _line_with_marker(line: str, marker: str) -> str:
+    stripped = line.strip()
+    if not stripped or _is_section_heading(stripped) or _has_source(stripped) or not marker:
+        return stripped
+    return f"{stripped} {marker}"
+
+
+def _message_text_blocks(message: Any) -> list[CitationText]:
+    blocks: list[CitationText] = []
+    for block in getattr(message, "content", []) or []:
+        text = getattr(block, "text", None)
+        if text is None and isinstance(block, dict):
+            text = block.get("text")
+        if not text:
+            continue
+        citations = getattr(block, "citations", None)
+        if citations is None and isinstance(block, dict):
+            citations = block.get("citations")
+        blocks.append(CitationText(text=str(text), citations=list(citations or [])))
+    return blocks
+
+
+def _annotated_response_text(message: Any, documents: list[SourceDocument]) -> str:
+    lines: list[str] = []
+    for block in _message_text_blocks(message):
+        marker = _source_marker(block.citations, documents)
+        for raw in block.text.splitlines():
+            line = raw.rstrip()
+            if not line.strip():
+                lines.append("")
+            else:
+                lines.append(_line_with_marker(line, marker))
+    return "\n".join(lines).strip()
+
+
+def parse_summary_markdown(
+    text: str,
+    company: str,
+    ticker: str = "",
+    presenter: str = "",
+    presentation_month: str = "",
+) -> Summary:
+    sections: dict[str, list[str]] = {
+        "overview": [],
+        "thesis": [],
+        "risks": [],
+        "target_price": [],
+    }
+    current = ""
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        key = _heading_key(line)
+        if key:
+            current = key
+            continue
+        if not current:
+            continue
+        sections[current].append(_strip_bullet_prefix(line))
+
+    return Summary(
+        company=company,
+        ticker=ticker,
+        presenter=presenter,
+        presentation_month=presentation_month,
+        overview="\n".join(sections["overview"]).strip(),
+        thesis="\n".join(sections["thesis"]).strip(),
+        risks="\n".join(sections["risks"]).strip(),
+        conclusion="",
+        target_price="\n".join(sections["target_price"]).strip(),
+        raw_excerpt=text[:300],
+    )
+
+
+def validate_cited_summary(summary: Summary) -> list[str]:
+    errors: list[str] = []
+    if not (summary.overview or summary.thesis or summary.risks):
+        errors.append("요약 본문이 비어 있습니다.")
+
+    for section_name, body in [
+        ("기업 개요", summary.overview),
+        ("투자 아이디어", summary.thesis),
+        ("투자 리스크", summary.risks),
+    ]:
+        for line in body.splitlines():
+            line = line.strip()
+            if not line or _is_no_info(line):
+                continue
+            if not _has_source(line):
+                errors.append(f"{section_name} 항목에 출처가 없습니다: {line}")
+
+    target = summary.target_price.strip()
+    if target and not _is_no_info(target) and not _has_source(target):
+        errors.append(f"목표가 항목에 출처가 없습니다: {target}")
+    return errors
+
+
+def _safe_debug_name(company: str, ticker: str) -> str:
+    base = "_".join(part for part in [company, ticker] if part).strip() or "llm_summary"
+    base = re.sub(r"[\\/:*?\"<>|\s]+", "_", base)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{base}_{stamp}.json"
+
+
+def _read_pdf_block(path: Path) -> SourceDocument:
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return SourceDocument(
+        title=path.name,
+        block_labels=[],
+        content_block={
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": data,
+            },
+            "title": path.name,
+            "citations": {"enabled": True},
+        },
+    )
+
+
+def _marker_label(path: Path, marker: str, part_index: int = 1) -> str:
+    marker = marker.strip()
+    match = re.match(r"^---\s*(Slide|Page|Section)\s*:\s*(.+?)\s*---$", marker, flags=re.IGNORECASE)
+    if match:
+        return f"{path.name}/{match.group(1).title()} {match.group(2)}"
+    match = re.match(r"^---\s*(Slide|Page|Section)\s+(.+?)\s*---$", marker, flags=re.IGNORECASE)
+    if match:
+        return f"{path.name}/{match.group(1).title()} {match.group(2)}"
+    match = re.match(r"^---\s*Sheet:\s*(.+?)\s*---$", marker, flags=re.IGNORECASE)
+    if match:
+        return f"{path.name}/Sheet {match.group(1)}"
+    return f"{path.name}/part {part_index}"
+
+
+def _split_text_chunks(path: Path, text: str, max_chars: int = 3500) -> tuple[list[dict[str, str]], list[str]]:
+    chunks: list[dict[str, str]] = []
+    labels: list[str] = []
+    current_label = f"{path.name}/part 1"
+    current_lines: list[str] = []
+    part_index = 1
+
+    def flush() -> None:
+        nonlocal part_index, current_lines, current_label
+        body = "\n".join(current_lines).strip()
+        if not body:
+            current_lines = []
+            return
+        while len(body) > max_chars:
+            piece = body[:max_chars].rstrip()
+            chunks.append({"type": "text", "text": f"[{current_label}]\n{piece}"})
+            labels.append(current_label)
+            body = body[max_chars:].lstrip()
+            part_index += 1
+            current_label = f"{path.name}/part {part_index}"
+        if body:
+            chunks.append({"type": "text", "text": f"[{current_label}]\n{body}"})
+            labels.append(current_label)
+        current_lines = []
+
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if re.match(r"^---\s*(?:Slide|Page|Section|Sheet:)", line, flags=re.IGNORECASE):
+            flush()
+            part_index += 1
+            current_label = _marker_label(path, line, part_index)
+            continue
+        current_lines.append(line)
+    flush()
+
+    if not chunks and text.strip():
+        chunks.append({"type": "text", "text": f"[{path.name}]\n{text.strip()}"})
+        labels.append(path.name)
+    return chunks, labels
+
+
+def _read_text_document(path: Path, text: str | None = None) -> SourceDocument:
+    body = text if text is not None else read_file(path)
+    chunks, labels = _split_text_chunks(path, body)
+    return SourceDocument(
+        title=path.name,
+        block_labels=labels,
+        content_block={
+            "type": "document",
+            "source": {
+                "type": "content",
+                "content": chunks,
+            },
+            "title": path.name,
+            "context": "Each content block starts with a source label that identifies file and slide/page/sheet/part.",
+            "citations": {"enabled": True},
+        },
+    )
+
+
+def _document_blocks_from_files(file_paths: list[Path]) -> list[SourceDocument]:
+    documents: list[SourceDocument] = []
+    for path in file_paths:
+        if path.suffix.lower() == ".pdf":
+            documents.append(_read_pdf_block(path))
+        else:
+            documents.append(_read_text_document(path))
+    return documents
 
 
 class LLMSummarizer(Summarizer):
-    """Anthropic Claude API summarizer."""
+    """Anthropic Claude API summarizer with document citations."""
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-5",
+        model: str = "claude-sonnet-4-6",
         api_key: str | None = None,
-        max_tokens: int = 1500,
-        fallback_on_error: bool = True,
+        max_tokens: int = 3000,
+        max_retries: int = 1,
+        debug_dir: str | Path | None = None,
+        fallback_on_error: bool = False,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self.max_tokens = max_tokens
+        self.max_retries = max_retries
+        self.debug_dir = Path(debug_dir) if debug_dir else None
         self.fallback_on_error = fallback_on_error
-        self._fallback = RuleBasedSummarizer()
 
-    def _call_api(self, prompt: str) -> str:
+    def _client(self) -> Any:
         try:
             from anthropic import Anthropic
         except ImportError as e:
@@ -83,19 +397,90 @@ class LLMSummarizer(Summarizer):
 
         if not self.api_key:
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
+        return Anthropic(api_key=self.api_key)
 
-        client = Anthropic(api_key=self.api_key)
-        msg = client.messages.create(
+    def _call_api(self, documents: list[SourceDocument], prompt: str) -> Any:
+        content = [doc.content_block for doc in documents]
+        content.append({"type": "text", "text": prompt})
+        return self._client().messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": content}],
         )
-        parts: list[str] = []
-        for block in msg.content:
-            text = getattr(block, "text", None)
-            if text:
-                parts.append(text)
-        return "".join(parts)
+
+    def _write_debug(
+        self,
+        company: str,
+        ticker: str,
+        response_text: str,
+        errors: list[str],
+        documents: list[SourceDocument],
+    ) -> None:
+        if self.debug_dir is None:
+            return
+        self.debug_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "company": company,
+            "ticker": ticker,
+            "model": self.model,
+            "errors": errors,
+            "response_text": response_text,
+            "documents": [
+                {"title": doc.title, "block_labels": doc.block_labels}
+                for doc in documents
+            ],
+        }
+        path = self.debug_dir / _safe_debug_name(company, ticker)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _summarize_documents(
+        self,
+        documents: list[SourceDocument],
+        company: str,
+        ticker: str = "",
+        presenter: str = "",
+        presentation_month: str = "",
+    ) -> Summary:
+        prompt = SUMMARY_PROMPT.format(
+            company=company,
+            ticker=ticker or "unknown ticker",
+            presenter=presenter or "-",
+            presentation_month=presentation_month or "-",
+        )
+
+        response_text = ""
+        errors: list[str] = []
+        for attempt in range(self.max_retries + 1):
+            call_prompt = prompt if attempt == 0 else REPAIR_PROMPT.format(errors="\n".join(errors))
+            message = self._call_api(documents, call_prompt)
+            response_text = _annotated_response_text(message, documents)
+            summary = parse_summary_markdown(
+                response_text,
+                company=company,
+                ticker=ticker,
+                presenter=presenter,
+                presentation_month=presentation_month,
+            )
+            errors = validate_cited_summary(summary)
+            if not errors:
+                return summary
+
+        self._write_debug(company, ticker, response_text, errors, documents)
+        raise RuntimeError("LLM summary failed citation validation: " + "; ".join(errors))
+
+    def summarize_files(
+        self,
+        file_paths: list[str | Path],
+        company: str,
+        ticker: str = "",
+        presenter: str = "",
+        presentation_month: str = "",
+    ) -> Summary:
+        paths = [Path(path).resolve() for path in file_paths if Path(path).exists()]
+        if not paths:
+            raise RuntimeError("no existing source files for LLM summarization")
+        documents = _document_blocks_from_files(paths)
+        return self._summarize_documents(documents, company, ticker, presenter, presentation_month)
 
     def summarize(
         self,
@@ -107,33 +492,5 @@ class LLMSummarizer(Summarizer):
     ) -> Summary:
         if not text or not text.strip():
             return Summary(company=company, ticker=ticker, presenter=presenter, presentation_month=presentation_month)
-
-        prompt = PROMPT_TEMPLATE.format(
-            company=company,
-            ticker=ticker or "unknown ticker",
-            body=_truncate_for_prompt(text),
-        )
-
-        try:
-            raw = self._call_api(prompt)
-            data = json.loads(_strip_code_fence(raw))
-        except Exception as e:
-            if not self.fallback_on_error:
-                raise
-            summary = self._fallback.summarize(text, company, ticker, presenter, presentation_month)
-            prefix = f"[LLM call failed; used rule-based fallback: {e}]"
-            summary.overview = f"{prefix}\n{summary.overview}" if summary.overview else prefix
-            return summary
-
-        return Summary(
-            company=company,
-            ticker=ticker,
-            presenter=presenter,
-            presentation_month=presentation_month,
-            overview=str(data.get("overview", "")).strip(),
-            thesis=str(data.get("thesis", "")).strip(),
-            risks=str(data.get("risks", "")).strip(),
-            conclusion="",
-            target_price=str(data.get("target_price", "")).strip(),
-            raw_excerpt=text[:300],
-        )
+        document = _read_text_document(Path("source.txt"), text)
+        return self._summarize_documents([document], company, ticker, presenter, presentation_month)

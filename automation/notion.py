@@ -310,8 +310,6 @@ def _with_source_marker(line: str, fallback_source: str = "") -> str:
     line = _strip_bullet_prefix(line)
     if not line or _SOURCE_RE.search(line):
         return line
-    if fallback_source:
-        return f"{line} [\ucd9c\ucc98: {fallback_source}]"
     return line
 
 
@@ -335,7 +333,7 @@ def _blocks_from_cited_lines(text: str, fallback_source: str = "") -> list[dict[
 
 
 def _blocks_from_overview_lines(text: str, fallback_source: str = "") -> list[dict[str, Any]]:
-    return [_paragraph(line) for line in normalize_overview_lines(text, fallback_source)]
+    return [_paragraph(line) for line in normalize_overview_lines(text, "")]
 
 
 def _table_row(cells: list[str]) -> dict[str, Any]:
@@ -347,8 +345,8 @@ def _table_row(cells: list[str]) -> dict[str, Any]:
 
 
 def _investment_table(summary: Summary, fallback_source: str) -> dict[str, Any]:
-    thesis = _summary_lines(summary.thesis, fallback_source)
-    risks = _summary_lines(summary.risks, fallback_source)
+    thesis = _summary_lines(summary.thesis, "")
+    risks = _summary_lines(summary.risks, "")
     thesis_cell = "\n".join(f"- {line}" for line in thesis) or "(empty)"
     risks_cell = "\n".join(f"- {line}" for line in risks) or "(empty)"
     return {
@@ -507,8 +505,6 @@ def blocks_for_post(summary: Summary, snap: PriceSnapshot, sources: list[str]) -
     if summary.ticker:
         title += f" ({summary.ticker})"
 
-    fallback_source = _fallback_source(sources)
-
     blocks: list[dict[str, Any]] = [
         _heading(1, title),
         _paragraph(f"Presenter: {summary.presenter or '-'}"),
@@ -517,9 +513,9 @@ def blocks_for_post(summary: Summary, snap: PriceSnapshot, sources: list[str]) -
     ]
 
     blocks.append(_heading(2, "\uae30\uc5c5 \uac1c\uc694"))
-    blocks.extend(_blocks_from_overview_lines(summary.overview, fallback_source))
+    blocks.extend(_blocks_from_overview_lines(summary.overview, ""))
     blocks.append(_heading(2, "\ud22c\uc790 \uc544\uc774\ub514\uc5b4 & \ud22c\uc790 \ub9ac\uc2a4\ud06c"))
-    blocks.append(_investment_table(summary, fallback_source))
+    blocks.append(_investment_table(summary, ""))
 
     if sources:
         blocks.append(_heading(3, "Source files"))
