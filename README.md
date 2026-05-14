@@ -4,7 +4,8 @@ Investment-study report helper CLI.
 
 It can:
 
-- read `.pptx`, `.pdf`, `.docx`, `.txt`, and `.md` source files
+- read `.pptx`, `.pdf`, `.docx`, `.txt`, `.md`, `.hwp`, `.hwpx`, `.xlsx`,
+  `.xlsm`, and `.xls` source files
 - summarize each source with a rule-based extractor or Claude
 - render a Notion-friendly HTML report
 - publish report pages to Notion
@@ -133,6 +134,7 @@ folder:
 incoming/
   Samsung/
     report.pdf
+    model.xlsx
     notes.md
   NVIDIA/
     deck.pptx
@@ -161,6 +163,7 @@ Put each report in a folder under `reports/` using this folder-name format:
 reports/
   Presenter,Company,107640.kq,26.04/
     deck.pptx
+    workbook.xlsx
     notes.txt
 ```
 

@@ -46,7 +46,8 @@ should end with a source marker such as `[출처: deck.pdf Slide 8]`.
 
 - `main.py`: CLI orchestration, config loading, report processing, Notion publish,
   price refresh.
-- `readers/reader.py`: extracts text from PPTX, PDF, DOCX, TXT, and MD files.
+- `readers/reader.py`: extracts text from PPTX, PDF, DOCX, TXT, MD, HWP/HWPX,
+  and Excel files.
 - `summarizer/llm_based.py`: Claude prompt and JSON parsing.
 - `summarizer/rule_based.py`: offline section extraction and target-price fallback.
 - `renderer/html_renderer.py`: HTML report rendering.
@@ -102,6 +103,7 @@ Relevant tests:
 - `tests/test_run_reports_skip.py`
 - `tests/test_notion_properties.py`
 - `tests/test_report_pipeline.py`
+- `tests/test_reader.py`
 - `tests/test_sector_classifier.py`
 
 Some local Codex Windows environments may not have `python` or `py` in `PATH`.
