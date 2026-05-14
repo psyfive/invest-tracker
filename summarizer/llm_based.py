@@ -85,19 +85,31 @@ def _strip_bullet_prefix(line: str) -> str:
     return re.sub(r"^\s*(?:[-*]\s+|\d+[\.)]\s+)", "", line).strip()
 
 
+def _strip_markdown_emphasis(line: str) -> str:
+    line = line.strip()
+    line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+    line = re.sub(r"__(.+?)__", r"\1", line)
+    return line.strip()
+
+
+def _clean_summary_line(line: str) -> str:
+    line = _strip_bullet_prefix(line)
+    return _strip_markdown_emphasis(line).strip()
+
+
 def _heading_key(line: str) -> str:
     line = line.strip()
     line = re.sub(r"^#+\s*", "", line)
-    line = _strip_bullet_prefix(line)
+    line = _clean_summary_line(line)
     line = line.rstrip(":：").strip()
     normalized = re.sub(r"\s+", "", line)
-    if normalized in {"기업개요", "회사개요", "개요"}:
+    if normalized in {"기업개요", "회사개요", "개요"} or normalized.startswith("기업개요"):
         return "overview"
-    if normalized in {"투자아이디어", "투자아이디어(Upside)", "Upside", "투자포인트"}:
+    if "투자아이디어" in normalized or normalized in {"Upside", "투자포인트"}:
         return "thesis"
-    if normalized in {"투자리스크", "투자리스크(Downside)", "Downside", "리스크"}:
+    if "투자리스크" in normalized or normalized in {"Downside", "리스크"}:
         return "risks"
-    if normalized in {"목표가", "목표주가", "타겟프라이스", "TargetPrice"}:
+    if "목표가" in normalized or "목표주가" in normalized or normalized in {"타겟프라이스", "TargetPrice"}:
         return "target_price"
     return ""
 
@@ -112,6 +124,29 @@ def _has_source(line: str) -> bool:
 
 def _is_no_info(line: str) -> bool:
     return "자료 내 명시 없음" in line or "(empty)" in line
+
+
+def _is_structural_line(line: str) -> bool:
+    raw = line.strip()
+    clean = _clean_summary_line(line).strip()
+    normalized = re.sub(r"\s+", "", clean.rstrip(":："))
+    if not clean or clean in {"---", "***", "___"}:
+        return True
+    if _is_section_heading(clean):
+        return True
+    if re.fullmatch(r"\*\*.+?[:：]\*\*", raw):
+        return True
+    if normalized in {
+        "핵심BM",
+        "시장지위",
+        "성장모멘텀",
+        "InvestmentIdea",
+        "InvestmentRisk",
+    }:
+        return True
+    if normalized in {"또한", "그리고", "다만", "반면", "한편"}:
+        return True
+    return False
 
 
 def _citation_value(citation: Any, name: str, default: Any = None) -> Any:
@@ -222,7 +257,9 @@ def parse_summary_markdown(
             continue
         if not current:
             continue
-        sections[current].append(_strip_bullet_prefix(line))
+        if _is_structural_line(line):
+            continue
+        sections[current].append(_clean_summary_line(line))
 
     return Summary(
         company=company,
@@ -250,13 +287,13 @@ def validate_cited_summary(summary: Summary) -> list[str]:
     ]:
         for line in body.splitlines():
             line = line.strip()
-            if not line or _is_no_info(line):
+            if not line or _is_no_info(line) or _is_structural_line(line):
                 continue
             if not _has_source(line):
                 errors.append(f"{section_name} 항목에 출처가 없습니다: {line}")
 
     target = summary.target_price.strip()
-    if target and not _is_no_info(target) and not _has_source(target):
+    if target and not _is_no_info(target) and not _is_structural_line(target) and not _has_source(target):
         errors.append(f"목표가 항목에 출처가 없습니다: {target}")
     return errors
 
@@ -344,6 +381,8 @@ def _split_text_chunks(path: Path, text: str, max_chars: int = 3500) -> tuple[li
 def _read_text_document(path: Path, text: str | None = None) -> SourceDocument:
     body = text if text is not None else read_file(path)
     chunks, labels = _split_text_chunks(path, body)
+    if not chunks:
+        raise RuntimeError("no extractable text")
     return SourceDocument(
         title=path.name,
         block_labels=labels,
@@ -362,11 +401,18 @@ def _read_text_document(path: Path, text: str | None = None) -> SourceDocument:
 
 def _document_blocks_from_files(file_paths: list[Path]) -> list[SourceDocument]:
     documents: list[SourceDocument] = []
+    failures: list[str] = []
     for path in file_paths:
-        if path.suffix.lower() == ".pdf":
-            documents.append(_read_pdf_block(path))
-        else:
-            documents.append(_read_text_document(path))
+        try:
+            if path.suffix.lower() == ".pdf":
+                documents.append(_read_pdf_block(path))
+            else:
+                documents.append(_read_text_document(path))
+        except Exception as e:
+            failures.append(f"{path.name}: {e}")
+            continue
+    if not documents and failures:
+        raise RuntimeError("no readable source files for LLM summarization: " + "; ".join(failures))
     return documents
 
 
