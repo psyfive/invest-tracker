@@ -108,7 +108,7 @@ def _render_price_trend_toggle(snap: PriceSnapshot, target_price_text: str = "")
 def _render_bullet_list(lines: list[str]) -> str:
     if not lines:
         return '<p style="color:#999">(empty)</p>'
-    return "<ul>" + "".join(f"<li>{_esc(line)}</li>" for line in lines) + "</ul>"
+    return "<ul>" + "".join(f'<li style="margin-bottom:8px">{_esc(line)}</li>' for line in lines) + "</ul>"
 
 
 def _render_investment_table(summary: Summary, fallback_source: str) -> str:
@@ -143,8 +143,8 @@ def _render_cited_section(title: str, body: str, fallback_source: str) -> str:
 
 
 def _render_overview_section(body: str, fallback_source: str) -> str:
-    paragraphs = normalize_overview_lines(body, "")
-    return "<h2>Company overview</h2>" + "".join(f"<p>{_esc(p)}</p>" for p in paragraphs)
+    lines = normalize_overview_lines(body, "")
+    return "<h2>Company overview</h2>" + _render_bullet_list(lines)
 
 
 def render_post(summary: Summary, snap: PriceSnapshot, sources: Iterable[str] = ()) -> str:

@@ -10,6 +10,7 @@ from price.fetcher import PriceSnapshot
 from price.indicator import (
     build_target_position,
     format_target_detail_line,
+    format_target_price_source_text,
     format_target_position_line,
     parse_target_price_value,
 )
@@ -199,7 +200,7 @@ class NotionClient:
                 return ""
             child_text = "\n".join(block_plain_text(child) for child in self.list_child_blocks(block_id))
             target = parse_target_price_value(child_text)
-            return target.display if target else ""
+            return format_target_price_source_text(target)
         return ""
 
 
@@ -344,7 +345,7 @@ def _blocks_from_cited_lines(text: str, fallback_source: str = "") -> list[dict[
 
 
 def _blocks_from_overview_lines(text: str, fallback_source: str = "") -> list[dict[str, Any]]:
-    return [_paragraph(line) for line in normalize_overview_lines(text, "")]
+    return [_bulleted_item(line) for line in normalize_overview_lines(text, "")]
 
 
 def _table_row(cells: list[str | list[dict[str, Any]]]) -> dict[str, Any]:
@@ -359,8 +360,8 @@ def _table_row(cells: list[str | list[dict[str, Any]]]) -> dict[str, Any]:
 def _investment_table(summary: Summary, fallback_source: str) -> dict[str, Any]:
     thesis = _summary_lines(summary.thesis, "")
     risks = _summary_lines(summary.risks, "")
-    thesis_cell = "\n".join(f"- {line}" for line in thesis) or "(empty)"
-    risks_cell = "\n".join(f"- {line}" for line in risks) or "(empty)"
+    thesis_cell = "\n\n".join(f"- {line}" for line in thesis) or "(empty)"
+    risks_cell = "\n\n".join(f"- {line}" for line in risks) or "(empty)"
     return {
         "object": "block",
         "type": "table",

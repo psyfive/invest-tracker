@@ -40,8 +40,14 @@ class ReportRenderingTests(unittest.TestCase):
                 f"{MARKET_POSITION}: {NO_INFO}\n"
                 f"{GROWTH_MOMENTUM}: 2026\ub144 \uc591\uc0b0 \uc608\uc815 {SOURCE_MARKER}"
             ),
-            thesis=f"- \uc218\ub0c9\uc2dd \ub0c9\uac01 \uc2dc\uc2a4\ud15c \ub9e4\ucd9c \ube44\uc911 40% {SOURCE_MARKER}",
-            risks=f"- \uace0\uac1d\uc0ac \ubc1c\uc8fc \uc9c0\uc5f0 \uc2dc \ub9e4\ucd9c \uc778\uc2dd \uc9c0\uc5f0 {SOURCE_MARKER}",
+            thesis=(
+                f"- \uc218\ub0c9\uc2dd \ub0c9\uac01 \uc2dc\uc2a4\ud15c \ub9e4\ucd9c \ube44\uc911 40% {SOURCE_MARKER}\n"
+                f"- \uc2e0\uaddc \uace0\uac1d\uc0ac \ud655\ub300 {SOURCE_MARKER}"
+            ),
+            risks=(
+                f"- \uace0\uac1d\uc0ac \ubc1c\uc8fc \uc9c0\uc5f0 \uc2dc \ub9e4\ucd9c \uc778\uc2dd \uc9c0\uc5f0 {SOURCE_MARKER}\n"
+                f"- \uc6d0\uc7ac\ub8cc \uac00\uaca9 \uc0c1\uc2b9 {SOURCE_MARKER}"
+            ),
             conclusion=REMOVED_CONCLUSION,
             target_price="2,000\uc6d0",
         )
@@ -88,6 +94,8 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn(SOURCE_MARKER, html)
         self.assertIn('color:#d32f2f', html)
         self.assertIn('color:#1976d2', html)
+        self.assertIn('<h2>Company overview</h2><ul>', html)
+        self.assertGreaterEqual(html.count('style="margin-bottom:8px"'), 7)
         self.assertNotIn("Conclusion / checkpoints", html)
         self.assertNotIn(REMOVED_CONCLUSION, html)
         self.assertNotIn("Price snapshot", html)
@@ -136,6 +144,21 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertEqual(current_change_cell["annotations"]["color"], "red")
         self.assertEqual(presentation_change_cell["annotations"]["color"], "blue")
 
+        overview_heading_index = next(
+            index for index, block in enumerate(blocks)
+            if block["type"] == "heading_2" and CORE_BM not in str(block) and "\uae30\uc5c5 \uac1c\uc694" in str(block)
+        )
+        overview_blocks = blocks[overview_heading_index + 1:overview_heading_index + 4]
+        self.assertTrue(all(block["type"] == "bulleted_list_item" for block in overview_blocks))
+
+        investment_table = next(
+            block for block in blocks
+            if block["type"] == "table" and IDEA_LABEL in str(block)
+        )
+        investment_cells = investment_table["table"]["children"][1]["table_row"]["cells"]
+        self.assertIn("\n\n- ", investment_cells[0][0]["text"]["content"])
+        self.assertIn("\n\n- ", investment_cells[1][0]["text"]["content"])
+
     def test_html_does_not_invent_source_markers(self) -> None:
         summary = Summary(
             company="A Corp",
@@ -176,6 +199,30 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertEqual(rows[1]["table_row"]["cells"][3][0]["annotations"]["color"], "gray")
         self.assertEqual(rows[4]["table_row"]["cells"][3][0]["annotations"]["color"], "gray")
         self.assertIn('color:#666', html)
+
+    def test_price_toggle_shows_scenario_targets_and_weighted_average(self) -> None:
+        summary = Summary(
+            company="Scenario Corp",
+            ticker="000001.KS",
+            target_price=(
+                "Bear \ubaa9\ud45c\uac00: 37,000\uc6d0\n"
+                "Base \ubaa9\ud45c\uac00: 61,000\uc6d0\n"
+                "Bull \ubaa9\ud45c\uac00: 97,000\uc6d0"
+            ),
+        )
+
+        html = render_post(summary, self.snap, sources=[])
+        blocks = blocks_for_post(summary, self.snap, sources=[])
+        serialized = str(blocks)
+
+        for text in (
+            "Bear: 37,000\uc6d0",
+            "Base: 61,000\uc6d0",
+            "Bull: 97,000\uc6d0",
+            "\uac00\uc911\ud3c9\uade0 \ubaa9\ud45c\uac00: 64,000\uc6d0",
+        ):
+            self.assertIn(text, html)
+            self.assertIn(text, serialized)
 
     def test_llm_prompt_requires_citations_and_variable_item_counts(self) -> None:
         prompt = SUMMARY_PROMPT.format(

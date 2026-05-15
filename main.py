@@ -26,7 +26,13 @@ from automation.notion import (
     target_from_config,
 )
 from automation.pipeline import build_config_from_directory, build_report_config_from_directory
-from price import PriceSnapshot, extract_target_price, fetch_price_snapshot, save_snapshot
+from price import (
+    PriceSnapshot,
+    extract_target_price,
+    fetch_price_snapshot,
+    format_target_price_source_text,
+    save_snapshot,
+)
 from readers import read_file
 from renderer import render_post
 from summarizer import SectorClassifier, Summary, get_summarizer
@@ -215,7 +221,7 @@ def _target_price_text_from_source(text: str, fallback: str = "") -> str:
         return fallback.strip()
     target = extract_target_price(text)
     if target is not None:
-        return target.display
+        return format_target_price_source_text(target)
     return ""
 
 

@@ -2,11 +2,13 @@
 from .fetcher import fetch_price_snapshot, PriceSnapshot
 from .storage import save_snapshot
 from .indicator import (
+    TargetPriceScenario,
     TargetPosition,
     TargetPrice,
     build_target_position,
     extract_target_price,
     format_target_detail_line,
+    format_target_price_source_text,
     format_target_position_line,
     parse_target_price_value,
 )
@@ -16,11 +18,13 @@ __all__ = [
     "fetch_price_snapshot",
     "PriceSnapshot",
     "save_snapshot",
+    "TargetPriceScenario",
     "TargetPosition",
     "TargetPrice",
     "build_target_position",
     "extract_target_price",
     "format_target_detail_line",
+    "format_target_price_source_text",
     "format_target_position_line",
     "parse_target_price_value",
     "build_price_summary_rows",
