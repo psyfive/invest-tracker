@@ -48,7 +48,8 @@ should end with a source marker such as `[출처: deck.pdf Slide 8]`.
   price refresh.
 - `readers/reader.py`: extracts text from PPTX, PDF, DOCX, TXT, MD, HWP/HWPX,
   and Excel files.
-- `summarizer/llm_based.py`: Claude prompt and JSON parsing.
+- `summarizer/llm_based.py`: Gemini structured-output prompt, JSON parsing,
+  and source-label validation.
 - `summarizer/rule_based.py`: offline section extraction and target-price fallback.
 - `renderer/html_renderer.py`: HTML report rendering.
 - `automation/notion.py`: Notion properties, blocks, page creation, and price

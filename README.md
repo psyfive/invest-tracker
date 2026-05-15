@@ -6,7 +6,7 @@ It can:
 
 - read `.pptx`, `.pdf`, `.docx`, `.txt`, `.md`, `.hwp`, `.hwpx`, `.xlsx`,
   `.xlsm`, and `.xls` source files
-- summarize each source with a rule-based extractor or Claude
+- summarize each source with a rule-based extractor or Gemini
 - render a Notion-friendly HTML report
 - publish report pages to Notion
 - fetch yfinance price snapshots and store them in SQLite/CSV
@@ -24,7 +24,7 @@ pip install -r requirements.txt
 For LLM mode:
 
 ```bash
-set ANTHROPIC_API_KEY=...
+set GEMINI_API_KEY=...
 ```
 
 For Notion publishing:
@@ -49,10 +49,11 @@ Generated reports now use this structure:
 
 The old `결론/체크포인트` section is intentionally omitted.
 
-LLM summaries use Claude document citations and fact-first Korean suitable for
-developer and investment-study readers. Investment ideas and risks are not fixed
-to three items; the tool keeps only items supported by the materials. Summary
-lines should carry source markers such as:
+LLM summaries use Gemini structured output with explicit source-block labels and
+fact-first Korean suitable for developer and investment-study readers.
+Investment ideas and risks are not fixed to three items; the tool keeps only
+items supported by the materials. Summary lines should carry source markers such
+as:
 
 ```text
 [출처: deck.pdf p.12]
@@ -118,8 +119,8 @@ Generated HTML files are written under `output/`.
 When `--publish-notion` is used with `run`, `run-folder`, or `run-reports`, the
 tool also classifies each company into the standard sector list and sends Notion
 database properties for ticker, presenter, one or more sectors, and Korean
-market when available. Sector classification uses the same Anthropic API key as
-LLM summarization and leaves the Notion sector empty if the classifier fails.
+market when available. Sector classification still uses Anthropic and
+`ANTHROPIC_API_KEY`; it leaves the Notion sector empty if the classifier fails.
 
 `refresh-prices --publish-notion` refreshes yfinance snapshots, finds existing
 Notion pages by `company + presentation_month`, archives the existing
@@ -188,8 +189,8 @@ any LLM calls are made. Use `--force` to reprocess a report intentionally.
 Useful fields:
 
 - `presentations`: explicit manual list of sources for `run`
-- `summarizer.model`: Claude model for LLM summaries, default config uses Sonnet
-- `summarizer.sector_model`: cheaper model for Notion sector classification
+- `summarizer.model`: Gemini model for LLM summaries, default config uses Flash
+- `summarizer.sector_model`: Anthropic model for Notion sector classification
 - `summarizer.max_retries`: citation/format repair attempts for LLM summaries
 - `summarizer.debug_dir`: where failed LLM responses and validation details are saved
 - `automation.ticker_map`: folder/name keyword to yfinance ticker mapping

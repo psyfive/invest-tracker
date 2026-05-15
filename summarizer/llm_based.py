@@ -1,14 +1,16 @@
-"""LLM-backed summarizer using Claude document citations."""
+"""LLM-backed summarizer using Gemini structured output and source labels."""
 from __future__ import annotations
 
-import base64
 import json
 import os
+import random
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from readers import read_file
 
@@ -19,52 +21,52 @@ OVERVIEW_HEADING = "기업 개요"
 THESIS_HEADING = "투자 아이디어"
 RISKS_HEADING = "투자 리스크"
 TARGET_HEADING = "목표가"
-SOURCE_RE = re.compile(r"\[(?:출처|source)\s*:", re.IGNORECASE)
+NO_INFO = "자료 내 명시 없음"
+SOURCE_RE = re.compile(r"\[(?:출처|source)\s*:\s*([^\]]+)\]", re.IGNORECASE)
 
 SUMMARY_PROMPT = """You are an assistant analyst for a Korean investment study.
-Use only the provided documents. Do not infer facts that are not in the materials.
+Use only the provided source blocks. Do not infer facts that are not in the materials.
 
 Write in Korean unless the source itself is English-only.
 Prefer concrete facts: numbers, dates, quantities, products, customers, contracts,
 capacity, revenue, margins, valuation, and explicit schedules.
 
-Return exactly these section headings and no extra sections:
+Return JSON that matches the provided response schema. Do not output markdown fences.
 
-## 기업 개요
-- 핵심 BM: ...
-- 시장 지위: ...
-- 성장 모멘텀: ...
-
-## 투자 아이디어
-- ...
-
-## 투자 리스크
-- ...
-
-## 목표가
-- ...
+Required sections:
+- overview: 기업 개요
+- thesis: 투자 아이디어
+- risks: 투자 리스크
+- target_price: 목표가
 
 Rules:
 - 기업 개요 should use 핵심 BM, 시장 지위, 성장 모멘텀 when the materials support them.
 - If one of those viewpoints is not supported, write "자료 내 명시 없음" for that viewpoint or omit it.
 - 투자 아이디어 and 투자 리스크 are not fixed to 3 items. Include only supported items from the materials.
 - If no supported investment idea or risk exists, write "자료 내 명시 없음" in that section.
-- Every factual bullet or factual sentence must be grounded in document citations.
-- Do not mention a source unless the cited document actually supports the claim.
-- Do not output JSON or markdown fences.
+- Every factual item must include a source value copied from the allowed source labels.
+- Do not mention a source unless that exact source block actually supports the claim.
+- The source field must be one of the allowed labels. Do not translate or reformat it.
+- For "자료 내 명시 없음" items, leave source empty.
 
 Company: {company}
 Ticker: {ticker}
 Presenter: {presenter}
 Presentation month: {presentation_month}
+
+Allowed source labels:
+{allowed_labels}
 """
 
 REPAIR_PROMPT = """The previous answer failed validation:
 {errors}
 
-Rewrite the summary using the same required headings. Keep only claims supported by
-the cited documents. Every factual bullet or sentence must have citations.
-Do not output JSON or markdown fences.
+Rewrite the summary as JSON using the same response schema. Keep only claims supported
+by the provided source blocks. Every factual item must use one source copied from the
+allowed source labels below. Do not translate, shorten, or reformat source labels.
+
+Allowed source labels:
+{allowed_labels}
 """
 
 
@@ -123,7 +125,7 @@ def _has_source(line: str) -> bool:
 
 
 def _is_no_info(line: str) -> bool:
-    return "자료 내 명시 없음" in line or "(empty)" in line
+    return NO_INFO in line or "(empty)" in line
 
 
 def _is_structural_line(line: str) -> bool:
@@ -220,6 +222,7 @@ def _message_text_blocks(message: Any) -> list[CitationText]:
 
 
 def _annotated_response_text(message: Any, documents: list[SourceDocument]) -> str:
+    """Compatibility helper for provider citation tests and saved debug data."""
     lines: list[str] = []
     for block in _message_text_blocks(message):
         marker = _source_marker(block.citations, documents)
@@ -239,6 +242,7 @@ def parse_summary_markdown(
     presenter: str = "",
     presentation_month: str = "",
 ) -> Summary:
+    """Parse legacy markdown summaries kept for compatibility and tests."""
     sections: dict[str, list[str]] = {
         "overview": [],
         "thesis": [],
@@ -275,7 +279,71 @@ def parse_summary_markdown(
     )
 
 
-def validate_cited_summary(summary: Summary) -> list[str]:
+def _extract_source_values(line: str) -> list[str]:
+    values: list[str] = []
+    for match in SOURCE_RE.finditer(line):
+        for source in re.split(r"\s*;\s*", match.group(1)):
+            source = source.strip()
+            if source:
+                values.append(source)
+    return values
+
+
+def _canonical_source_label(value: str) -> str:
+    value = str(value or "").strip()
+    source_match = SOURCE_RE.search(value)
+    if source_match:
+        value = source_match.group(1)
+    value = value.strip().strip("[](){}")
+    value = value.replace("\\", "/")
+    value = re.sub(r"\bslides?\b", "slide", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bpages?\b", "page", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bsections?\b", "section", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bparts?\b", "part", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b시트\b", "sheet", value, flags=re.IGNORECASE)
+    value = value.replace("슬라이드", "slide")
+    value = value.replace("페이지", "page")
+    value = value.replace("섹션", "section")
+    value = value.replace("파트", "part")
+    value = re.sub(r"(slide|page|section|part)\s*0*([0-9]+)", r"\1\2", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s*/\s*", "/", value)
+    return re.sub(r"[\s\[\]\(\){}:：_\-]+", "", value.casefold())
+
+
+def _match_source_label(source: str, allowed_labels: list[str]) -> tuple[str, str]:
+    source = str(source or "").strip()
+    if not source:
+        return "", "출처가 없습니다"
+
+    canonical = _canonical_source_label(source)
+    if not canonical:
+        return "", f"출처가 비어 있습니다: {source}"
+
+    canonical_map: dict[str, list[str]] = {}
+    for label in allowed_labels:
+        canonical_map.setdefault(_canonical_source_label(label), []).append(label)
+
+    exact = canonical_map.get(canonical, [])
+    if len(exact) == 1:
+        return exact[0], ""
+    if len(exact) > 1:
+        return "", f"출처가 여러 라벨과 일치합니다: {source}"
+
+    scored = sorted(
+        (
+            (SequenceMatcher(None, canonical, _canonical_source_label(label)).ratio(), label)
+            for label in allowed_labels
+        ),
+        reverse=True,
+    )
+    if not scored or scored[0][0] < 0.86:
+        return "", f"허용되지 않은 출처입니다: {source}"
+    if len(scored) > 1 and scored[0][0] - scored[1][0] < 0.08:
+        return "", f"출처가 애매합니다: {source}"
+    return scored[0][1], ""
+
+
+def validate_cited_summary(summary: Summary, allowed_labels: list[str] | None = None) -> list[str]:
     errors: list[str] = []
     if not (summary.overview or summary.thesis or summary.risks):
         errors.append("요약 본문이 비어 있습니다.")
@@ -289,12 +357,26 @@ def validate_cited_summary(summary: Summary) -> list[str]:
             line = line.strip()
             if not line or _is_no_info(line) or _is_structural_line(line):
                 continue
-            if not _has_source(line):
+            sources = _extract_source_values(line)
+            if not sources:
                 errors.append(f"{section_name} 항목에 출처가 없습니다: {line}")
+                continue
+            if allowed_labels is not None:
+                for source in sources:
+                    _matched, error = _match_source_label(source, allowed_labels)
+                    if error:
+                        errors.append(f"{section_name} 항목의 출처가 유효하지 않습니다: {error}")
 
     target = summary.target_price.strip()
-    if target and not _is_no_info(target) and not _is_structural_line(target) and not _has_source(target):
-        errors.append(f"목표가 항목에 출처가 없습니다: {target}")
+    if target and not _is_no_info(target) and not _is_structural_line(target):
+        sources = _extract_source_values(target)
+        if not sources:
+            errors.append(f"목표가 항목에 출처가 없습니다: {target}")
+        elif allowed_labels is not None:
+            for source in sources:
+                _matched, error = _match_source_label(source, allowed_labels)
+                if error:
+                    errors.append(f"목표가 항목의 출처가 유효하지 않습니다: {error}")
     return errors
 
 
@@ -303,24 +385,6 @@ def _safe_debug_name(company: str, ticker: str) -> str:
     base = re.sub(r"[\\/:*?\"<>|\s]+", "_", base)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{base}_{stamp}.json"
-
-
-def _read_pdf_block(path: Path) -> SourceDocument:
-    data = base64.b64encode(path.read_bytes()).decode("ascii")
-    return SourceDocument(
-        title=path.name,
-        block_labels=[],
-        content_block={
-            "type": "document",
-            "source": {
-                "type": "base64",
-                "media_type": "application/pdf",
-                "data": data,
-            },
-            "title": path.name,
-            "citations": {"enabled": True},
-        },
-    )
 
 
 def _marker_label(path: Path, marker: str, part_index: int = 1) -> str:
@@ -352,13 +416,13 @@ def _split_text_chunks(path: Path, text: str, max_chars: int = 3500) -> tuple[li
             return
         while len(body) > max_chars:
             piece = body[:max_chars].rstrip()
-            chunks.append({"type": "text", "text": f"[{current_label}]\n{piece}"})
+            chunks.append({"label": current_label, "text": piece})
             labels.append(current_label)
             body = body[max_chars:].lstrip()
             part_index += 1
             current_label = f"{path.name}/part {part_index}"
         if body:
-            chunks.append({"type": "text", "text": f"[{current_label}]\n{body}"})
+            chunks.append({"label": current_label, "text": body})
             labels.append(current_label)
         current_lines = []
 
@@ -373,7 +437,7 @@ def _split_text_chunks(path: Path, text: str, max_chars: int = 3500) -> tuple[li
     flush()
 
     if not chunks and text.strip():
-        chunks.append({"type": "text", "text": f"[{path.name}]\n{text.strip()}"})
+        chunks.append({"label": path.name, "text": text.strip()})
         labels.append(path.name)
     return chunks, labels
 
@@ -387,16 +451,15 @@ def _read_text_document(path: Path, text: str | None = None) -> SourceDocument:
         title=path.name,
         block_labels=labels,
         content_block={
-            "type": "document",
-            "source": {
-                "type": "content",
-                "content": chunks,
-            },
-            "title": path.name,
-            "context": "Each content block starts with a source label that identifies file and slide/page/sheet/part.",
-            "citations": {"enabled": True},
+            "type": "source_blocks",
+            "chunks": chunks,
         },
     )
+
+
+def _read_pdf_block(path: Path) -> SourceDocument:
+    """Read PDFs through the local extractor so source labels stay uniform."""
+    return _read_text_document(path)
 
 
 def _document_blocks_from_files(file_paths: list[Path]) -> list[SourceDocument]:
@@ -404,10 +467,7 @@ def _document_blocks_from_files(file_paths: list[Path]) -> list[SourceDocument]:
     failures: list[str] = []
     for path in file_paths:
         try:
-            if path.suffix.lower() == ".pdf":
-                documents.append(_read_pdf_block(path))
-            else:
-                documents.append(_read_text_document(path))
+            documents.append(_read_text_document(path))
         except Exception as e:
             failures.append(f"{path.name}: {e}")
             continue
@@ -416,43 +476,295 @@ def _document_blocks_from_files(file_paths: list[Path]) -> list[SourceDocument]:
     return documents
 
 
+def _allowed_labels(documents: list[SourceDocument]) -> list[str]:
+    labels: list[str] = []
+    for document in documents:
+        for label in document.block_labels:
+            if label not in labels:
+                labels.append(label)
+    return labels
+
+
+def _format_allowed_labels(labels: list[str]) -> str:
+    return "\n".join(f"- {label}" for label in labels) or "- (none)"
+
+
+def _documents_prompt_text(documents: list[SourceDocument]) -> str:
+    blocks: list[str] = []
+    for document in documents:
+        for chunk in document.content_block.get("chunks", []):
+            label = str(chunk.get("label") or document.title)
+            text = str(chunk.get("text") or "").strip()
+            if not text:
+                continue
+            blocks.append(
+                f"--- BLOCK START: [{label}] ---\n"
+                f"{text}\n"
+                f"--- BLOCK END: [{label}] ---"
+            )
+    return "\n\n".join(blocks)
+
+
+def _summary_response_schema() -> dict[str, Any]:
+    try:
+        from pydantic import BaseModel, ConfigDict, Field
+
+        class SummaryItemModel(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+
+            fact: str = Field(description="Supported factual sentence or '자료 내 명시 없음'.")
+            source: str = Field(
+                description="One allowed source label copied exactly, or empty for '자료 내 명시 없음'."
+            )
+
+        class SummaryResponseModel(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+
+            overview: list[SummaryItemModel]
+            thesis: list[SummaryItemModel]
+            risks: list[SummaryItemModel]
+            target_price: list[SummaryItemModel]
+
+        return SummaryResponseModel.model_json_schema()
+    except ImportError:
+        pass
+
+    item_schema = {
+        "type": "object",
+        "properties": {
+            "fact": {
+                "type": "string",
+                "description": "Supported factual sentence or '자료 내 명시 없음'.",
+            },
+            "source": {
+                "type": "string",
+                "description": "One allowed source label copied exactly, or empty for '자료 내 명시 없음'.",
+            },
+        },
+        "required": ["fact", "source"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "overview": {"type": "array", "items": item_schema},
+            "thesis": {"type": "array", "items": item_schema},
+            "risks": {"type": "array", "items": item_schema},
+            "target_price": {"type": "array", "items": item_schema},
+        },
+        "required": ["overview", "thesis", "risks", "target_price"],
+        "additionalProperties": False,
+    }
+
+
+def _strip_code_fence(text: str) -> str:
+    text = (text or "").strip()
+    match = re.match(r"^```(?:json)?\s*(.+?)\s*```$", text, flags=re.DOTALL | re.IGNORECASE)
+    return match.group(1).strip() if match else text
+
+
+def _parse_response_json(text: str) -> dict[str, Any]:
+    data = json.loads(_strip_code_fence(text))
+    if not isinstance(data, dict):
+        raise ValueError("Gemini response JSON is not an object")
+    return data
+
+
+def _coerce_items(payload: dict[str, Any], key: str) -> list[dict[str, str]]:
+    raw = payload.get(key, [])
+    if isinstance(raw, dict):
+        raw = [raw]
+    if isinstance(raw, str):
+        raw = [{"fact": raw, "source": ""}]
+    if not isinstance(raw, list):
+        return []
+
+    items: list[dict[str, str]] = []
+    for item in raw:
+        if isinstance(item, str):
+            items.append({"fact": item, "source": ""})
+            continue
+        if not isinstance(item, dict):
+            continue
+        source = item.get("source", "")
+        if isinstance(source, list):
+            source = "; ".join(str(part) for part in source)
+        items.append(
+            {
+                "fact": str(item.get("fact", "")).strip(),
+                "source": str(source or "").strip(),
+            }
+        )
+    return items
+
+
+def _lines_from_structured_items(
+    section_name: str,
+    items: list[dict[str, str]],
+    allowed_labels: list[str],
+) -> tuple[list[str], list[str]]:
+    lines: list[str] = []
+    errors: list[str] = []
+    for item in items:
+        fact = _clean_summary_line(item.get("fact", ""))
+        source = item.get("source", "").strip()
+        if not fact:
+            continue
+        if _is_no_info(fact):
+            lines.append(fact)
+            continue
+        matched, error = _match_source_label(source, allowed_labels)
+        if error:
+            errors.append(f"{section_name} 항목의 출처가 유효하지 않습니다: {error} / fact={fact}")
+            lines.append(fact)
+            continue
+        lines.append(f"{fact} [출처: {matched}]")
+    return lines, errors
+
+
+def structured_payload_to_summary(
+    payload: dict[str, Any],
+    allowed_labels: list[str],
+    company: str,
+    ticker: str = "",
+    presenter: str = "",
+    presentation_month: str = "",
+    raw_excerpt: str = "",
+) -> tuple[Summary, list[str]]:
+    overview, overview_errors = _lines_from_structured_items(
+        "기업 개요", _coerce_items(payload, "overview"), allowed_labels
+    )
+    thesis, thesis_errors = _lines_from_structured_items(
+        "투자 아이디어", _coerce_items(payload, "thesis"), allowed_labels
+    )
+    risks, risks_errors = _lines_from_structured_items(
+        "투자 리스크", _coerce_items(payload, "risks"), allowed_labels
+    )
+    target_price, target_errors = _lines_from_structured_items(
+        "목표가", _coerce_items(payload, "target_price"), allowed_labels
+    )
+
+    summary = Summary(
+        company=company,
+        ticker=ticker,
+        presenter=presenter,
+        presentation_month=presentation_month,
+        overview="\n".join(overview).strip(),
+        thesis="\n".join(thesis).strip(),
+        risks="\n".join(risks).strip(),
+        conclusion="",
+        target_price="\n".join(target_price).strip(),
+        raw_excerpt=raw_excerpt[:300],
+    )
+    errors = overview_errors + thesis_errors + risks_errors + target_errors
+    errors.extend(validate_cited_summary(summary, allowed_labels=allowed_labels))
+    return summary, errors
+
+
+def _is_retryable_api_error(error: Exception) -> bool:
+    status = getattr(error, "status_code", None) or getattr(error, "code", None)
+    try:
+        status_int = int(status)
+    except (TypeError, ValueError):
+        status_int = 0
+    if status_int == 429 or 500 <= status_int <= 599:
+        return True
+    text = str(error).lower()
+    return any(
+        marker in text
+        for marker in [
+            "429",
+            "too many requests",
+            "rate limit",
+            "quota",
+            "500",
+            "502",
+            "503",
+            "504",
+            "timeout",
+            "temporarily unavailable",
+            "connection",
+        ]
+    )
+
+
 class LLMSummarizer(Summarizer):
-    """Anthropic Claude API summarizer with document citations."""
+    """Gemini API summarizer with structured source-label validation."""
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-6",
+        model: str = "gemini-2.5-flash",
         api_key: str | None = None,
         max_tokens: int = 3000,
         max_retries: int = 1,
         debug_dir: str | Path | None = None,
         fallback_on_error: bool = False,
+        api_retries: int = 3,
+        sleep_func: Callable[[float], None] = time.sleep,
     ) -> None:
         self.model = model
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
         self.max_tokens = max_tokens
         self.max_retries = max_retries
         self.debug_dir = Path(debug_dir) if debug_dir else None
         self.fallback_on_error = fallback_on_error
+        self.api_retries = api_retries
+        self.sleep_func = sleep_func
 
     def _client(self) -> Any:
         try:
-            from anthropic import Anthropic
+            from google import genai
         except ImportError as e:
-            raise RuntimeError("anthropic is not installed; run pip install anthropic") from e
+            raise RuntimeError("google-genai is not installed; run pip install google-genai") from e
 
         if not self.api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY is not set")
-        return Anthropic(api_key=self.api_key)
+            raise RuntimeError("GEMINI_API_KEY is not set")
+        return genai.Client(api_key=self.api_key)
 
-    def _call_api(self, documents: list[SourceDocument], prompt: str) -> Any:
-        content = [doc.content_block for doc in documents]
-        content.append({"type": "text", "text": prompt})
-        return self._client().messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            messages=[{"role": "user", "content": content}],
-        )
+    def _call_api(self, documents: list[SourceDocument], prompt: str) -> str:
+        contents = [
+            _documents_prompt_text(documents),
+            prompt,
+        ]
+        schema = _summary_response_schema()
+        configs = [
+            {
+                "max_output_tokens": self.max_tokens,
+                "response_format": {
+                    "text": {
+                        "mime_type": "application/json",
+                        "schema": schema,
+                    }
+                },
+            },
+            {
+                "max_output_tokens": self.max_tokens,
+                "response_mime_type": "application/json",
+                "response_schema": schema,
+            },
+        ]
+        config_index = 0
+        last_error: Exception | None = None
+        for attempt in range(self.api_retries + 1):
+            try:
+                response = self._client().models.generate_content(
+                    model=self.model,
+                    contents=contents,
+                    config=configs[config_index],
+                )
+                return str(getattr(response, "text", "") or "")
+            except TypeError as e:
+                if config_index == 0 and "response_format" in str(e):
+                    config_index = 1
+                    continue
+                raise
+            except Exception as e:
+                last_error = e
+                if attempt >= self.api_retries or not _is_retryable_api_error(e):
+                    raise
+                delay = (2**attempt) + random.uniform(0, 0.25)
+                self.sleep_func(delay)
+        raise RuntimeError(f"Gemini API call failed: {last_error}")
 
     def _write_debug(
         self,
@@ -461,6 +773,8 @@ class LLMSummarizer(Summarizer):
         response_text: str,
         errors: list[str],
         documents: list[SourceDocument],
+        structured_payload: dict[str, Any] | None,
+        allowed_labels: list[str],
     ) -> None:
         if self.debug_dir is None:
             return
@@ -471,6 +785,8 @@ class LLMSummarizer(Summarizer):
             "model": self.model,
             "errors": errors,
             "response_text": response_text,
+            "structured_payload": structured_payload,
+            "allowed_labels": allowed_labels,
             "documents": [
                 {"title": doc.title, "block_labels": doc.block_labels}
                 for doc in documents
@@ -487,31 +803,53 @@ class LLMSummarizer(Summarizer):
         presenter: str = "",
         presentation_month: str = "",
     ) -> Summary:
+        allowed_labels = _allowed_labels(documents)
+        label_text = _format_allowed_labels(allowed_labels)
         prompt = SUMMARY_PROMPT.format(
             company=company,
             ticker=ticker or "unknown ticker",
             presenter=presenter or "-",
             presentation_month=presentation_month or "-",
+            allowed_labels=label_text,
         )
 
         response_text = ""
+        structured_payload: dict[str, Any] | None = None
         errors: list[str] = []
+        raw_excerpt = _documents_prompt_text(documents)[:300]
         for attempt in range(self.max_retries + 1):
-            call_prompt = prompt if attempt == 0 else REPAIR_PROMPT.format(errors="\n".join(errors))
-            message = self._call_api(documents, call_prompt)
-            response_text = _annotated_response_text(message, documents)
-            summary = parse_summary_markdown(
-                response_text,
+            call_prompt = prompt if attempt == 0 else REPAIR_PROMPT.format(
+                errors="\n".join(errors),
+                allowed_labels=label_text,
+            )
+            try:
+                response_text = self._call_api(documents, call_prompt)
+                structured_payload = _parse_response_json(response_text)
+            except (json.JSONDecodeError, ValueError) as e:
+                errors = [f"Gemini response JSON parsing failed: {e}"]
+                continue
+
+            summary, errors = structured_payload_to_summary(
+                structured_payload,
+                allowed_labels=allowed_labels,
                 company=company,
                 ticker=ticker,
                 presenter=presenter,
                 presentation_month=presentation_month,
+                raw_excerpt=raw_excerpt,
             )
-            errors = validate_cited_summary(summary)
             if not errors:
                 return summary
 
-        self._write_debug(company, ticker, response_text, errors, documents)
+        self._write_debug(
+            company,
+            ticker,
+            response_text,
+            errors,
+            documents,
+            structured_payload,
+            allowed_labels,
+        )
         raise RuntimeError("LLM summary failed citation validation: " + "; ".join(errors))
 
     def summarize_files(

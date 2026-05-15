@@ -106,14 +106,16 @@ class ReportRenderingTests(unittest.TestCase):
             ticker="000001.KS",
             presenter="Kim",
             presentation_month="26.04",
+            allowed_labels="- deck.pdf/Page 1",
         )
 
         self.assertIn(CORE_BM, prompt)
         self.assertIn(MARKET_POSITION, prompt)
         self.assertIn(GROWTH_MOMENTUM, prompt)
         self.assertIn("are not fixed to 3 items", prompt)
-        self.assertIn("Every factual bullet or factual sentence must be grounded", prompt)
-        self.assertIn("Do not output JSON", prompt)
+        self.assertIn("Every factual item must include a source", prompt)
+        self.assertIn("Return JSON", prompt)
+        self.assertIn("Do not output markdown fences", prompt)
 
 
 if __name__ == "__main__":
