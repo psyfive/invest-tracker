@@ -23,7 +23,7 @@ from price.summary_table import (
     format_market_cap,
 )
 from summarizer.base import Summary
-from summarizer.overview import normalize_overview_lines
+from summarizer.overview import overview_items
 
 
 NOTION_VERSION = "2022-06-28"
@@ -265,8 +265,11 @@ def _toggle(text: str, children: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _bulleted_item(text: str) -> dict[str, Any]:
-    return {"object": "block", "type": "bulleted_list_item", "bulleted_list_item": {"rich_text": _rich_text(text)}}
+def _bulleted_item(text: str, children: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"rich_text": _rich_text(text)}
+    if children:
+        payload["children"] = children
+    return {"object": "block", "type": "bulleted_list_item", "bulleted_list_item": payload}
 
 
 def _numbered_item(text: str) -> dict[str, Any]:
@@ -345,7 +348,10 @@ def _blocks_from_cited_lines(text: str, fallback_source: str = "") -> list[dict[
 
 
 def _blocks_from_overview_lines(text: str, fallback_source: str = "") -> list[dict[str, Any]]:
-    return [_bulleted_item(line) for line in normalize_overview_lines(text, "")]
+    return [
+        _bulleted_item(label, [_bulleted_item(content)])
+        for label, content in overview_items(text, "")
+    ]
 
 
 def _table_row(cells: list[str | list[dict[str, Any]]]) -> dict[str, Any]:

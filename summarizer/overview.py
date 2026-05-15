@@ -69,3 +69,13 @@ def normalize_overview_lines(text: str, fallback_source: str = "") -> list[str]:
         lines.append(_ensure_source_marker(line, fallback_source if content != NO_INFO else ""))
 
     return lines
+
+
+def overview_items(text: str, fallback_source: str = "") -> list[tuple[str, str]]:
+    """Return normalized overview lines split into display label/content pairs."""
+    items: list[tuple[str, str]] = []
+    for line in normalize_overview_lines(text, fallback_source):
+        label, content = _split_label(line)
+        if label:
+            items.append((label, content))
+    return items

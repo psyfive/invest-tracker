@@ -95,6 +95,9 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn('color:#d32f2f', html)
         self.assertIn('color:#1976d2', html)
         self.assertIn('<h2>Company overview</h2><ul>', html)
+        self.assertIn(f'<li style="margin-bottom:8px">{CORE_BM}<ul><li>', html)
+        self.assertIn(f'<li style="margin-bottom:8px">{MARKET_POSITION}<ul><li>{NO_INFO}</li></ul></li>', html)
+        self.assertNotIn(f"{CORE_BM}: ESS", html)
         self.assertGreaterEqual(html.count('style="margin-bottom:8px"'), 7)
         self.assertNotIn("Conclusion / checkpoints", html)
         self.assertNotIn(REMOVED_CONCLUSION, html)
@@ -150,6 +153,20 @@ class ReportRenderingTests(unittest.TestCase):
         )
         overview_blocks = blocks[overview_heading_index + 1:overview_heading_index + 4]
         self.assertTrue(all(block["type"] == "bulleted_list_item" for block in overview_blocks))
+        self.assertEqual(
+            [
+                block["bulleted_list_item"]["rich_text"][0]["text"]["content"]
+                for block in overview_blocks
+            ],
+            [CORE_BM, MARKET_POSITION, GROWTH_MOMENTUM],
+        )
+        overview_children = [
+            block["bulleted_list_item"]["children"][0]
+            for block in overview_blocks
+        ]
+        self.assertTrue(all(child["type"] == "bulleted_list_item" for child in overview_children))
+        self.assertIn(SOURCE_MARKER, str(overview_children[0]))
+        self.assertIn(NO_INFO, str(overview_children[1]))
 
         investment_table = next(
             block for block in blocks

@@ -1,6 +1,6 @@
 import unittest
 
-from summarizer.overview import NO_INFO, normalize_overview_lines
+from summarizer.overview import NO_INFO, normalize_overview_lines, overview_items
 
 
 CORE_BM = "\ud575\uc2ec BM"
@@ -65,6 +65,26 @@ class OverviewNormalizationTests(unittest.TestCase):
 
         self.assertTrue(lines[1].startswith(f"{MARKET_POSITION}:"))
         self.assertTrue(lines[2].startswith(f"{GROWTH_MOMENTUM}:"))
+
+    def test_overview_items_split_labels_from_content_for_rendering(self) -> None:
+        items = overview_items(
+            "\n".join(
+                [
+                    f"{CORE_BM}: ESS \ub0c9\uac01 {SOURCE}",
+                    f"{MARKET_POSITION}: {NO_INFO}",
+                    f"{GROWTH_MOMENTUM}: \uc591\uc0b0 \ud655\ub300 {SOURCE}",
+                ]
+            )
+        )
+
+        self.assertEqual(
+            items,
+            [
+                (CORE_BM, f"ESS \ub0c9\uac01 {SOURCE}"),
+                (MARKET_POSITION, NO_INFO),
+                (GROWTH_MOMENTUM, f"\uc591\uc0b0 \ud655\ub300 {SOURCE}"),
+            ],
+        )
 
 
 if __name__ == "__main__":

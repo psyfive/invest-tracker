@@ -22,7 +22,7 @@ from price.summary_table import (
     format_market_cap,
 )
 from summarizer.base import Summary
-from summarizer.overview import normalize_overview_lines
+from summarizer.overview import overview_items
 
 
 def _esc(value: str | None) -> str:
@@ -143,8 +143,18 @@ def _render_cited_section(title: str, body: str, fallback_source: str) -> str:
 
 
 def _render_overview_section(body: str, fallback_source: str) -> str:
-    lines = normalize_overview_lines(body, "")
-    return "<h2>Company overview</h2>" + _render_bullet_list(lines)
+    items = overview_items(body, "")
+    if not items:
+        return '<h2>Company overview</h2><p style="color:#999">(empty)</p>'
+    bullets = "".join(
+        (
+            f'<li style="margin-bottom:8px">{_esc(label)}'
+            f"<ul><li>{_esc(content)}</li></ul>"
+            "</li>"
+        )
+        for label, content in items
+    )
+    return "<h2>Company overview</h2><ul>" + bullets + "</ul>"
 
 
 def render_post(summary: Summary, snap: PriceSnapshot, sources: Iterable[str] = ()) -> str:
