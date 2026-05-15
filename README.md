@@ -269,6 +269,10 @@ Useful fields:
 - `summarizer.mode`: `rule` or `llm`
 - `summarizer.model`: Gemini model for LLM summaries
 - `summarizer.sector_model`: Anthropic model for Notion sector classification
+- `summarizer.max_items`: normal-pass soft caps for `overview`, `thesis`, and
+  `risks`
+- `summarizer.compact_retry_max_items`: stricter caps used after a truncated
+  Gemini response
 - `summarizer.max_retries`: citation/format repair attempts for LLM summaries
 - `summarizer.debug_dir`: where failed LLM responses and validation details are
   saved

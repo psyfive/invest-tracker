@@ -242,6 +242,16 @@ def process_config(
             summ_kwargs["max_tokens"] = int(summ_cfg["max_tokens"])
         if "max_retries" in summ_cfg:
             summ_kwargs["max_retries"] = int(summ_cfg["max_retries"])
+        if isinstance(summ_cfg.get("max_items"), dict):
+            summ_kwargs["max_items"] = {
+                key: int(value)
+                for key, value in summ_cfg["max_items"].items()
+            }
+        if isinstance(summ_cfg.get("compact_retry_max_items"), dict):
+            summ_kwargs["compact_retry_max_items"] = {
+                key: int(value)
+                for key, value in summ_cfg["compact_retry_max_items"].items()
+            }
         debug_dir = summ_cfg.get("debug_dir", output_dir / "debug")
         summ_kwargs["debug_dir"] = str(_resolve_config_path(base_dir, debug_dir, "output/debug"))
     summarizer = get_summarizer(mode, **summ_kwargs)

@@ -1,3 +1,4 @@
+import json
 import unittest
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ from summarizer.llm_based import (
     _document_blocks_from_files,
     _documents_prompt_text,
     _match_source_label,
+    _prepare_structured_payload,
     _response_metadata,
     parse_summary_markdown,
     structured_payload_to_summary,
@@ -284,6 +286,7 @@ class LLMCitationSummaryTests(unittest.TestCase):
             usage_metadata=SimpleNamespace(
                 prompt_token_count=120,
                 candidates_token_count=80,
+                thoughts_token_count=15,
                 total_token_count=200,
             ),
         )
@@ -293,7 +296,107 @@ class LLMCitationSummaryTests(unittest.TestCase):
         self.assertEqual(metadata["finish_reason"], "MAX_TOKENS")
         self.assertEqual(metadata["usage_metadata"]["prompt_token_count"], 120)
         self.assertEqual(metadata["usage_metadata"]["candidates_token_count"], 80)
+        self.assertEqual(metadata["usage_metadata"]["thoughts_token_count"], 15)
         self.assertEqual(metadata["usage_metadata"]["total_token_count"], 200)
+
+    def test_structured_payload_dedupes_similar_facts_and_prefers_presentation_sources(self) -> None:
+        payload = {
+            "overview": [
+                {
+                    "fact": "삼성SDI에 ESS 냉각 솔루션을 공급합니다.",
+                    "source": "recording.docx/part 1",
+                },
+                {
+                    "fact": "삼성SDI에 ESS 냉각 솔루션을 공급합니다.",
+                    "source": "deck.pptx/Slide 3",
+                },
+            ],
+            "thesis": [],
+            "risks": [],
+            "target_price": [],
+        }
+
+        prepared, stats = _prepare_structured_payload(
+            payload,
+            {"overview": 5, "thesis": 8, "risks": 8},
+        )
+
+        self.assertEqual(stats["overview"], {"before_dedupe": 2, "after_dedupe": 1, "after_cap": 1})
+        self.assertEqual(prepared["overview"][0]["source"], "deck.pptx/Slide 3")
+
+    def test_structured_payload_caps_items_without_padding_sparse_sections(self) -> None:
+        payload = {
+            "overview": [
+                {"fact": f"개요 {index}", "source": "deck.pptx/Slide 3"}
+                for index in range(1, 7)
+            ],
+            "thesis": [{"fact": "투자 아이디어 1", "source": "deck.pptx/Slide 3"}],
+            "risks": [{"fact": "자료 내 명시 없음", "source": ""}],
+            "target_price": [],
+        }
+
+        prepared, stats = _prepare_structured_payload(
+            payload,
+            {"overview": 5, "thesis": 8, "risks": 8},
+        )
+
+        self.assertEqual(len(prepared["overview"]), 5)
+        self.assertEqual(len(prepared["thesis"]), 1)
+        self.assertEqual(prepared["risks"], [{"fact": "자료 내 명시 없음", "source": ""}])
+        self.assertEqual(stats["overview"]["after_cap"], 5)
+
+    def test_max_tokens_uses_compact_retry_limits(self) -> None:
+        class CompactRetrySummarizer(LLMSummarizer):
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+                self.calls = 0
+                super().__init__(
+                    api_key="test",
+                    max_retries=1,
+                    max_items={"overview": 5, "thesis": 8, "risks": 8},
+                    compact_retry_max_items={"overview": 3, "thesis": 6, "risks": 6},
+                )
+
+            def _call_api(self, _documents, prompt: str) -> str:
+                self.calls += 1
+                self.prompts.append(prompt)
+                if self.calls == 1:
+                    self._last_response_metadata = {"finish_reason": "MAX_TOKENS", "usage_metadata": {}}
+                    return '{"overview":[{"fact":"긴 개요","source":"deck.pptx/Slide 1"}'
+                self._last_response_metadata = {"finish_reason": "STOP", "usage_metadata": {}}
+                return json.dumps(
+                    {
+                        "overview": [
+                            {"fact": f"개요 {index}", "source": "deck.pptx/Slide 1"}
+                            for index in range(1, 5)
+                        ],
+                        "thesis": [
+                            {"fact": f"아이디어 {index}", "source": "deck.pptx/Slide 1"}
+                            for index in range(1, 8)
+                        ],
+                        "risks": [
+                            {"fact": f"리스크 {index}", "source": "deck.pptx/Slide 1"}
+                            for index in range(1, 8)
+                        ],
+                        "target_price": [{"fact": "자료 내 명시 없음", "source": ""}],
+                    },
+                    ensure_ascii=False,
+                )
+
+        document = SourceDocument(
+            title="deck.pptx",
+            content_block={"chunks": [{"label": "deck.pptx/Slide 1", "text": "body"}]},
+            block_labels=["deck.pptx/Slide 1"],
+        )
+        summarizer = CompactRetrySummarizer()
+
+        summary = summarizer._summarize_documents([document], "A Corp")
+
+        self.assertEqual(summarizer.calls, 2)
+        self.assertIn("Stay within these stricter section limits", summarizer.prompts[1])
+        self.assertEqual(len(summary.overview.splitlines()), 3)
+        self.assertEqual(len(summary.thesis.splitlines()), 6)
+        self.assertEqual(len(summary.risks.splitlines()), 6)
 
 
 if __name__ == "__main__":

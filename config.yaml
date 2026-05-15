@@ -9,6 +9,14 @@ summarizer:
   sector_model: claude-haiku-4-5-20251001
   max_tokens: 6000
   max_retries: 1
+  max_items:
+    overview: 5
+    thesis: 8
+    risks: 8
+  compact_retry_max_items:
+    overview: 3
+    thesis: 6
+    risks: 6
   debug_dir: output/debug
 
 # Static inputs still work with:

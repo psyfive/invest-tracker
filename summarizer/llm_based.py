@@ -23,6 +23,9 @@ RISKS_HEADING = "투자 리스크"
 TARGET_HEADING = "목표가"
 NO_INFO = "자료 내 명시 없음"
 SOURCE_RE = re.compile(r"\[(?:출처|source)\s*:\s*([^\]]+)\]", re.IGNORECASE)
+SUMMARY_SECTION_KEYS = ("overview", "thesis", "risks")
+DEFAULT_MAX_ITEMS = {"overview": 5, "thesis": 8, "risks": 8}
+DEFAULT_COMPACT_RETRY_MAX_ITEMS = {"overview": 3, "thesis": 6, "risks": 6}
 
 SUMMARY_PROMPT = """You are an assistant analyst for a Korean investment study.
 Use only the provided source blocks. Do not infer facts that are not in the materials.
@@ -49,6 +52,11 @@ Rules:
 - The source field must be one of the allowed labels. Do not translate or reformat it.
 - For "자료 내 명시 없음" items, leave source empty.
 - Keep each fact to one concise sentence. Do not emit headings, labels-only items, or repeated explanations.
+- Avoid duplicate claims across sections and within the same section.
+- If the same claim is supported by multiple sources, prefer presentation materials:
+  PPTX/PDF first, then presentation-script TXT, then voice-recording DOCX.
+- Aim to stay within these section limits while keeping the most material facts:
+{item_limits}
 
 Company: {company}
 Ticker: {ticker}
@@ -67,6 +75,26 @@ the same response schema. Do not reuse partial or malformed JSON from the previo
 Keep only claims supported by the provided source blocks. Every factual item must use one
 source copied from the allowed source labels below. Do not translate, shorten, or reformat
 source labels. Keep each fact to one concise sentence.
+Avoid duplicate claims and prefer presentation-material sources in this order:
+PPTX/PDF first, then presentation-script TXT, then voice-recording DOCX.
+Aim to stay within these section limits:
+{item_limits}
+
+Allowed source labels:
+{allowed_labels}
+"""
+
+COMPACT_RETRY_PROMPT = """The previous answer was truncated before valid JSON completed:
+{errors}
+
+Regenerate the summary from the source blocks as one complete compact JSON object using
+the same response schema. Keep only the most material non-duplicative claims. Use one
+concise sentence per fact, omit lower-priority repeats, and never reuse partial JSON from
+the previous answer.
+If the same claim is supported by multiple sources, prefer presentation-material sources
+in this order: PPTX/PDF first, then presentation-script TXT, then voice-recording DOCX.
+Stay within these stricter section limits:
+{item_limits}
 
 Allowed source labels:
 {allowed_labels}
@@ -492,6 +520,16 @@ def _format_allowed_labels(labels: list[str]) -> str:
     return "\n".join(f"- {label}" for label in labels) or "- (none)"
 
 
+def _format_item_limits(limits: dict[str, int]) -> str:
+    return "\n".join(
+        [
+            f"- overview: at most {limits['overview']} items",
+            f"- thesis: at most {limits['thesis']} items",
+            f"- risks: at most {limits['risks']} items",
+        ]
+    )
+
+
 def _documents_prompt_text(documents: list[SourceDocument]) -> str:
     blocks: list[str] = []
     for document in documents:
@@ -594,6 +632,7 @@ def _response_metadata(response: Any) -> dict[str, Any]:
     for name in [
         "prompt_token_count",
         "candidates_token_count",
+        "thoughts_token_count",
         "total_token_count",
         "cached_content_token_count",
     ]:
@@ -633,6 +672,100 @@ def _coerce_items(payload: dict[str, Any], key: str) -> list[dict[str, str]]:
             }
         )
     return items
+
+
+def _normalized_fact_key(fact: str) -> str:
+    fact = _clean_summary_line(fact)
+    fact = re.sub(r"\[[^\]]+\]", "", fact)
+    fact = re.sub(r"[^\w가-힣]+", "", fact.casefold())
+    return fact
+
+
+def _facts_are_duplicates(left: str, right: str) -> bool:
+    left_key = _normalized_fact_key(left)
+    right_key = _normalized_fact_key(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    return SequenceMatcher(None, left_key, right_key).ratio() >= 0.9
+
+
+def _source_priority(source: str) -> int:
+    lower = str(source or "").casefold()
+    if ".pptx/" in lower or ".pdf/" in lower:
+        return 0
+    if "발표대본" in lower or ".txt/" in lower:
+        return 1
+    if "음성녹음" in lower or ".docx/" in lower:
+        return 2
+    return 3
+
+
+def _prefer_item(left: dict[str, str], right: dict[str, str]) -> dict[str, str]:
+    left_rank = _source_priority(left.get("source", ""))
+    right_rank = _source_priority(right.get("source", ""))
+    if right_rank < left_rank:
+        return right
+    if left_rank < right_rank:
+        return left
+    if len(right.get("fact", "")) > len(left.get("fact", "")):
+        return right
+    return left
+
+
+def _dedupe_items(items: list[dict[str, str]]) -> list[dict[str, str]]:
+    deduped: list[dict[str, str]] = []
+    for item in items:
+        fact = item.get("fact", "").strip()
+        if not fact:
+            continue
+        if _is_no_info(fact):
+            if not deduped:
+                deduped.append(item)
+            continue
+        duplicate_index = next(
+            (
+                index
+                for index, existing in enumerate(deduped)
+                if _facts_are_duplicates(existing.get("fact", ""), fact)
+            ),
+            None,
+        )
+        if duplicate_index is None:
+            deduped.append(item)
+            continue
+        deduped[duplicate_index] = _prefer_item(deduped[duplicate_index], item)
+    return deduped
+
+
+def _cap_items(items: list[dict[str, str]], limit: int) -> list[dict[str, str]]:
+    if limit <= 0:
+        return []
+    factual_items = [item for item in items if not _is_no_info(item.get("fact", ""))]
+    if factual_items:
+        return factual_items[:limit]
+    return items[:1]
+
+
+def _prepare_structured_payload(
+    payload: dict[str, Any],
+    max_items: dict[str, int],
+) -> tuple[dict[str, Any], dict[str, dict[str, int]]]:
+    prepared = dict(payload)
+    stats: dict[str, dict[str, int]] = {}
+    for key in SUMMARY_SECTION_KEYS:
+        items = _coerce_items(payload, key)
+        deduped = _dedupe_items(items)
+        capped = _cap_items(deduped, max_items[key])
+        prepared[key] = capped
+        stats[key] = {
+            "before_dedupe": len(items),
+            "after_dedupe": len(deduped),
+            "after_cap": len(capped),
+        }
+    prepared["target_price"] = _coerce_items(payload, "target_price")
+    return prepared, stats
 
 
 def _lines_from_structured_items(
@@ -725,6 +858,21 @@ def _is_retryable_api_error(error: Exception) -> bool:
     )
 
 
+def _normalized_item_limits(
+    configured: dict[str, int] | None,
+    defaults: dict[str, int],
+) -> dict[str, int]:
+    limits = dict(defaults)
+    if not configured:
+        return limits
+    for key in SUMMARY_SECTION_KEYS:
+        value = configured.get(key)
+        if value is None:
+            continue
+        limits[key] = max(0, int(value))
+    return limits
+
+
 class LLMSummarizer(Summarizer):
     """Gemini API summarizer with structured source-label validation."""
 
@@ -734,6 +882,8 @@ class LLMSummarizer(Summarizer):
         api_key: str | None = None,
         max_tokens: int = 3000,
         max_retries: int = 1,
+        max_items: dict[str, int] | None = None,
+        compact_retry_max_items: dict[str, int] | None = None,
         debug_dir: str | Path | None = None,
         fallback_on_error: bool = False,
         api_retries: int = 3,
@@ -743,12 +893,19 @@ class LLMSummarizer(Summarizer):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
         self.max_tokens = max_tokens
         self.max_retries = max_retries
+        self.max_items = _normalized_item_limits(max_items, DEFAULT_MAX_ITEMS)
+        self.compact_retry_max_items = _normalized_item_limits(
+            compact_retry_max_items,
+            DEFAULT_COMPACT_RETRY_MAX_ITEMS,
+        )
         self.debug_dir = Path(debug_dir) if debug_dir else None
         self.fallback_on_error = fallback_on_error
         self.api_retries = api_retries
         self.sleep_func = sleep_func
         self._genai_client: Any | None = None
         self._last_response_metadata: dict[str, Any] = {}
+        self._last_attempt_mode = "standard"
+        self._last_item_stats: dict[str, dict[str, int]] = {}
 
     def _client(self) -> Any:
         try:
@@ -811,6 +968,8 @@ class LLMSummarizer(Summarizer):
             "response_text": response_text,
             "structured_payload": structured_payload,
             "response_metadata": self._last_response_metadata,
+            "attempt_mode": self._last_attempt_mode,
+            "item_stats": self._last_item_stats,
             "allowed_labels": allowed_labels,
             "documents": [
                 {"title": doc.title, "block_labels": doc.block_labels}
@@ -830,23 +989,44 @@ class LLMSummarizer(Summarizer):
     ) -> Summary:
         allowed_labels = _allowed_labels(documents)
         label_text = _format_allowed_labels(allowed_labels)
+        standard_limits_text = _format_item_limits(self.max_items)
+        compact_limits_text = _format_item_limits(self.compact_retry_max_items)
         prompt = SUMMARY_PROMPT.format(
             company=company,
             ticker=ticker or "unknown ticker",
             presenter=presenter or "-",
             presentation_month=presentation_month or "-",
             allowed_labels=label_text,
+            item_limits=standard_limits_text,
         )
 
         response_text = ""
         structured_payload: dict[str, Any] | None = None
         errors: list[str] = []
         raw_excerpt = _documents_prompt_text(documents)[:300]
+        compact_retry_pending = False
+        self._last_item_stats = {}
         for attempt in range(self.max_retries + 1):
-            call_prompt = prompt if attempt == 0 else REPAIR_PROMPT.format(
-                errors="\n".join(errors),
-                allowed_labels=label_text,
-            )
+            if attempt == 0:
+                self._last_attempt_mode = "standard"
+                active_limits = self.max_items
+                call_prompt = prompt
+            elif compact_retry_pending:
+                self._last_attempt_mode = "compact_retry"
+                active_limits = self.compact_retry_max_items
+                call_prompt = COMPACT_RETRY_PROMPT.format(
+                    errors="\n".join(errors),
+                    allowed_labels=label_text,
+                    item_limits=compact_limits_text,
+                )
+            else:
+                self._last_attempt_mode = "repair"
+                active_limits = self.max_items
+                call_prompt = REPAIR_PROMPT.format(
+                    errors="\n".join(errors),
+                    allowed_labels=label_text,
+                    item_limits=standard_limits_text,
+                )
             try:
                 response_text = self._call_api(documents, call_prompt)
                 structured_payload = _parse_response_json(response_text)
@@ -858,6 +1038,7 @@ class LLMSummarizer(Summarizer):
                     else "Gemini response JSON parsing failed"
                 )
                 errors = [f"{prefix}: {_json_error_context(response_text, e)}"]
+                compact_retry_pending = finish_reason == "MAX_TOKENS"
                 self._write_debug(
                     company,
                     ticker,
@@ -870,6 +1051,7 @@ class LLMSummarizer(Summarizer):
                 continue
             except ValueError as e:
                 errors = [f"Gemini response JSON parsing failed: {e}"]
+                compact_retry_pending = False
                 self._write_debug(
                     company,
                     ticker,
@@ -881,6 +1063,10 @@ class LLMSummarizer(Summarizer):
                 )
                 continue
 
+            structured_payload, self._last_item_stats = _prepare_structured_payload(
+                structured_payload,
+                active_limits,
+            )
             summary, errors = structured_payload_to_summary(
                 structured_payload,
                 allowed_labels=allowed_labels,
@@ -892,6 +1078,7 @@ class LLMSummarizer(Summarizer):
             )
             if not errors:
                 return summary
+            compact_retry_pending = False
 
         self._write_debug(
             company,
@@ -902,7 +1089,12 @@ class LLMSummarizer(Summarizer):
             structured_payload,
             allowed_labels,
         )
-        raise RuntimeError("LLM summary failed citation validation: " + "; ".join(errors))
+        prefix = (
+            "LLM summary failed after compact retry"
+            if self._last_attempt_mode == "compact_retry"
+            else "LLM summary failed citation validation"
+        )
+        raise RuntimeError(prefix + ": " + "; ".join(errors))
 
     def summarize_files(
         self,
