@@ -6,9 +6,13 @@ import re
 
 OVERVIEW_LABELS = (
     "\ud575\uc2ec BM",
-    "\uc2dc\uc7a5 \uc9c0\uc704",
-    "\uc131\uc7a5 \ubaa8\uba58\ud140",
+    "\ud604\uc7ac \uc2dc\uc7a5 \uc9c0\uc704",
+    "\uc55e\uc73c\ub85c\uc758 \uc131\uc7a5 \ubaa8\uba58\ud140",
 )
+LEGACY_LABEL_MAP = {
+    "\uc2dc\uc7a5 \uc9c0\uc704": "\ud604\uc7ac \uc2dc\uc7a5 \uc9c0\uc704",
+    "\uc131\uc7a5 \ubaa8\uba58\ud140": "\uc55e\uc73c\ub85c\uc758 \uc131\uc7a5 \ubaa8\uba58\ud140",
+}
 NO_INFO = "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c"
 SOURCE_RE = re.compile(r"\[(?:\ucd9c\ucc98|source)\s*:", re.IGNORECASE)
 
@@ -32,16 +36,16 @@ def _ensure_source_marker(line: str, fallback_source: str) -> str:
 
 def _split_label(line: str) -> tuple[str | None, str]:
     clean = _strip_bullet_prefix(line)
-    for label in OVERVIEW_LABELS:
+    for label in (*OVERVIEW_LABELS, *LEGACY_LABEL_MAP):
         pattern = rf"^{re.escape(label)}\s*(?::|-)\s*(.+)$"
         match = re.match(pattern, clean)
         if match:
-            return label, match.group(1).strip()
+            return LEGACY_LABEL_MAP.get(label, label), match.group(1).strip()
     return None, clean
 
 
 def normalize_overview_lines(text: str, fallback_source: str = "") -> list[str]:
-    """Return overview lines without inventing unsupported viewpoints."""
+    """Return the fixed three-line overview shape without inventing viewpoints."""
     labeled: dict[str, str] = {}
     unlabeled: list[str] = []
 
@@ -55,14 +59,13 @@ def normalize_overview_lines(text: str, fallback_source: str = "") -> list[str]:
         elif content:
             unlabeled.append(content)
 
+    if unlabeled and OVERVIEW_LABELS[0] not in labeled:
+        labeled[OVERVIEW_LABELS[0]] = unlabeled[0]
+
     lines: list[str] = []
     for label in OVERVIEW_LABELS:
-        content = labeled.get(label)
-        if content:
-            line = f"{label}: {content}"
-            lines.append(_ensure_source_marker(line, fallback_source))
+        content = labeled.get(label) or NO_INFO
+        line = f"{label}: {content}"
+        lines.append(_ensure_source_marker(line, fallback_source if content != NO_INFO else ""))
 
-    for content in unlabeled:
-        lines.append(_ensure_source_marker(content, fallback_source))
-
-    return lines or [NO_INFO]
+    return lines

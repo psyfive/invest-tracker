@@ -139,10 +139,11 @@ class LLMCitationSummaryTests(unittest.TestCase):
 
     def test_structured_payload_is_converted_to_existing_summary_contract(self) -> None:
         payload = {
-            "overview": [
-                {"fact": "\ud575\uc2ec BM: ESS \ub0c9\uac01 \ubd80\ud488", "source": "deck.pptx/Slide 3"},
-                {"fact": "\uc2dc\uc7a5 \uc9c0\uc704: \uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""},
-            ],
+            "overview": {
+                "core_bm": {"fact": "ESS \ub0c9\uac01 \ubd80\ud488", "source": "deck.pptx/Slide 3"},
+                "current_market_position": {"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""},
+                "future_growth_momentum": {"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""},
+            },
             "thesis": [{"fact": "\uc591\uc0b0 \uc77c\uc815 \uad6c\uccb4\ud654", "source": "deck.pptx/Slide 3"}],
             "risks": [{"fact": "\ubc1c\uc8fc \uc9c0\uc5f0 \uc704\ud5d8", "source": "deck.pptx/Slide 3"}],
             "target_price": [{"fact": "\ubaa9\ud45c\uc8fc\uac00 95,000\uc6d0", "source": "deck.pptx/Slide 3"}],
@@ -163,7 +164,11 @@ class LLMCitationSummaryTests(unittest.TestCase):
 
     def test_structured_payload_rejects_missing_factual_source(self) -> None:
         payload = {
-            "overview": [{"fact": "\ud575\uc2ec BM: ESS \ub0c9\uac01 \ubd80\ud488", "source": ""}],
+            "overview": {
+                "core_bm": {"fact": "ESS \ub0c9\uac01 \ubd80\ud488", "source": ""},
+                "current_market_position": {"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""},
+                "future_growth_momentum": {"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""},
+            },
             "thesis": [{"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""}],
             "risks": [{"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""}],
             "target_price": [{"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""}],
@@ -179,7 +184,11 @@ class LLMCitationSummaryTests(unittest.TestCase):
 
     def test_no_info_items_do_not_need_sources(self) -> None:
         payload = {
-            "overview": [{"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""}],
+            "overview": {
+                "core_bm": {"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""},
+                "current_market_position": {"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""},
+                "future_growth_momentum": {"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""},
+            },
             "thesis": [{"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""}],
             "risks": [{"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""}],
             "target_price": [{"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""}],
@@ -301,16 +310,11 @@ class LLMCitationSummaryTests(unittest.TestCase):
 
     def test_structured_payload_dedupes_similar_facts_and_prefers_presentation_sources(self) -> None:
         payload = {
-            "overview": [
-                {
-                    "fact": "삼성SDI에 ESS 냉각 솔루션을 공급합니다.",
-                    "source": "recording.docx/part 1",
-                },
-                {
-                    "fact": "삼성SDI에 ESS 냉각 솔루션을 공급합니다.",
-                    "source": "deck.pptx/Slide 3",
-                },
-            ],
+            "overview": {
+                "core_bm": {"fact": "ESS \ub0c9\uac01 \uc194\ub8e8\uc158", "source": "deck.pptx/Slide 3"},
+                "current_market_position": {"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""},
+                "future_growth_momentum": {"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""},
+            },
             "thesis": [],
             "risks": [],
             "target_price": [],
@@ -318,18 +322,19 @@ class LLMCitationSummaryTests(unittest.TestCase):
 
         prepared, stats = _prepare_structured_payload(
             payload,
-            {"overview": 5, "thesis": 8, "risks": 8},
+            {"overview": 3, "thesis": 8, "risks": 8},
         )
 
-        self.assertEqual(stats["overview"], {"before_dedupe": 2, "after_dedupe": 1, "after_cap": 1})
-        self.assertEqual(prepared["overview"][0]["source"], "deck.pptx/Slide 3")
+        self.assertEqual(stats["overview"], {"before_dedupe": 3, "after_dedupe": 3, "after_cap": 3})
+        self.assertEqual(prepared["overview"]["core_bm"]["source"], "deck.pptx/Slide 3")
 
     def test_structured_payload_caps_items_without_padding_sparse_sections(self) -> None:
         payload = {
-            "overview": [
-                {"fact": f"개요 {index}", "source": "deck.pptx/Slide 3"}
-                for index in range(1, 7)
-            ],
+            "overview": {
+                "core_bm": {"fact": "\uac1c\uc694 1", "source": "deck.pptx/Slide 3"},
+                "current_market_position": {"fact": "\uac1c\uc694 2", "source": "deck.pptx/Slide 3"},
+                "future_growth_momentum": {"fact": "\uac1c\uc694 3", "source": "deck.pptx/Slide 3"},
+            },
             "thesis": [{"fact": "투자 아이디어 1", "source": "deck.pptx/Slide 3"}],
             "risks": [{"fact": "자료 내 명시 없음", "source": ""}],
             "target_price": [],
@@ -337,13 +342,13 @@ class LLMCitationSummaryTests(unittest.TestCase):
 
         prepared, stats = _prepare_structured_payload(
             payload,
-            {"overview": 5, "thesis": 8, "risks": 8},
+            {"overview": 3, "thesis": 8, "risks": 8},
         )
 
-        self.assertEqual(len(prepared["overview"]), 5)
+        self.assertEqual(len(prepared["overview"]), 3)
         self.assertEqual(len(prepared["thesis"]), 1)
         self.assertEqual(prepared["risks"], [{"fact": "자료 내 명시 없음", "source": ""}])
-        self.assertEqual(stats["overview"]["after_cap"], 5)
+        self.assertEqual(stats["overview"]["after_cap"], 3)
 
     def test_max_tokens_uses_compact_retry_limits(self) -> None:
         class CompactRetrySummarizer(LLMSummarizer):
@@ -397,6 +402,29 @@ class LLMCitationSummaryTests(unittest.TestCase):
         self.assertEqual(len(summary.overview.splitlines()), 3)
         self.assertEqual(len(summary.thesis.splitlines()), 6)
         self.assertEqual(len(summary.risks.splitlines()), 6)
+
+    def test_overview_rejects_more_than_three_sentences(self) -> None:
+        payload = {
+            "overview": {
+                "core_bm": {
+                    "fact": "\ubb38\uc7a5 1. \ubb38\uc7a5 2. \ubb38\uc7a5 3. \ubb38\uc7a5 4.",
+                    "source": "deck.pptx/Slide 3",
+                },
+                "current_market_position": {"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""},
+                "future_growth_momentum": {"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""},
+            },
+            "thesis": [{"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""}],
+            "risks": [{"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""}],
+            "target_price": [{"fact": "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c", "source": ""}],
+        }
+
+        _summary, errors = structured_payload_to_summary(
+            payload,
+            allowed_labels=["deck.pptx/Slide 3"],
+            company="A Corp",
+        )
+
+        self.assertTrue(any("3문장을 초과" in error for error in errors))
 
 
 if __name__ == "__main__":

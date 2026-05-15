@@ -24,7 +24,7 @@ TARGET_HEADING = "목표가"
 NO_INFO = "자료 내 명시 없음"
 SOURCE_RE = re.compile(r"\[(?:출처|source)\s*:\s*([^\]]+)\]", re.IGNORECASE)
 SUMMARY_SECTION_KEYS = ("overview", "thesis", "risks")
-DEFAULT_MAX_ITEMS = {"overview": 5, "thesis": 8, "risks": 8}
+DEFAULT_MAX_ITEMS = {"overview": 3, "thesis": 8, "risks": 8}
 DEFAULT_COMPACT_RETRY_MAX_ITEMS = {"overview": 3, "thesis": 6, "risks": 6}
 
 SUMMARY_PROMPT = """You are an assistant analyst for a Korean investment study.
@@ -43,8 +43,13 @@ Required sections:
 - target_price: 목표가
 
 Rules:
-- 기업 개요 should use 핵심 BM, 시장 지위, 성장 모멘텀 when the materials support them.
-- If one of those viewpoints is not supported, write "자료 내 명시 없음" for that viewpoint or omit it.
+- overview must contain exactly these three slots:
+  core_bm, current_market_position, future_growth_momentum.
+- core_bm renders as "핵심 BM".
+- current_market_position renders as "현재 시장 지위".
+- future_growth_momentum renders as "앞으로의 성장 모멘텀".
+- Each overview slot must contain 1 to 3 Korean sentences when supported.
+- If an overview slot is not supported, set fact to "자료 내 명시 없음" and source to empty.
 - 투자 아이디어 and 투자 리스크 are not fixed to 3 items. Include only supported items from the materials.
 - If no supported investment idea or risk exists, write "자료 내 명시 없음" in that section.
 - Every factual item must include a source value copied from the allowed source labels.
@@ -558,10 +563,17 @@ def _summary_response_schema() -> dict[str, Any]:
                 description="One allowed source label copied exactly, or empty for '자료 내 명시 없음'."
             )
 
+        class OverviewResponseModel(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+
+            core_bm: SummaryItemModel
+            current_market_position: SummaryItemModel
+            future_growth_momentum: SummaryItemModel
+
         class SummaryResponseModel(BaseModel):
             model_config = ConfigDict(extra="forbid")
 
-            overview: list[SummaryItemModel]
+            overview: OverviewResponseModel
             thesis: list[SummaryItemModel]
             risks: list[SummaryItemModel]
             target_price: list[SummaryItemModel]
@@ -585,10 +597,20 @@ def _summary_response_schema() -> dict[str, Any]:
         "required": ["fact", "source"],
         "additionalProperties": False,
     }
+    overview_schema = {
+        "type": "object",
+        "properties": {
+            "core_bm": item_schema,
+            "current_market_position": item_schema,
+            "future_growth_momentum": item_schema,
+        },
+        "required": ["core_bm", "current_market_position", "future_growth_momentum"],
+        "additionalProperties": False,
+    }
     return {
         "type": "object",
         "properties": {
-            "overview": {"type": "array", "items": item_schema},
+            "overview": overview_schema,
             "thesis": {"type": "array", "items": item_schema},
             "risks": {"type": "array", "items": item_schema},
             "target_price": {"type": "array", "items": item_schema},
@@ -674,6 +696,62 @@ def _coerce_items(payload: dict[str, Any], key: str) -> list[dict[str, str]]:
     return items
 
 
+def _coerce_overview_items(payload: dict[str, Any]) -> list[dict[str, str]]:
+    raw = payload.get("overview", {})
+    if isinstance(raw, list):
+        return _coerce_items(payload, "overview")
+    if not isinstance(raw, dict):
+        return []
+    def item(value: Any) -> dict[str, str]:
+        if isinstance(value, dict):
+            return {
+                "fact": str(value.get("fact", "")).strip(),
+                "source": str(value.get("source", "") or "").strip(),
+            }
+        if isinstance(value, str):
+            return {"fact": value.strip(), "source": ""}
+        return {"fact": "", "source": ""}
+    return [
+        item(raw.get("core_bm")),
+        item(raw.get("current_market_position")),
+        item(raw.get("future_growth_momentum")),
+    ]
+
+
+def _sentence_count(text: str) -> int:
+    clean = re.sub(r"\[[^\]]+\]", "", text or "").strip()
+    if not clean or _is_no_info(clean):
+        return 0
+    parts = [part for part in re.split(r"(?<=[.!?])\s+", clean) if part.strip()]
+    return len(parts) if parts else 1
+
+
+def _overview_lines_from_items(
+    items: list[dict[str, str]],
+    allowed_labels: list[str],
+) -> tuple[list[str], list[str]]:
+    labels = ["핵심 BM", "현재 시장 지위", "앞으로의 성장 모멘텀"]
+    padded = items[:3] + [{"fact": NO_INFO, "source": ""}] * max(0, 3 - len(items))
+    lines: list[str] = []
+    errors: list[str] = []
+    for label, item in zip(labels, padded):
+        fact = _clean_summary_line(item.get("fact", "")) or NO_INFO
+        source = item.get("source", "").strip()
+        if _is_no_info(fact):
+            lines.append(f"{label}: {NO_INFO}")
+            continue
+        sentence_count = _sentence_count(fact)
+        if sentence_count > 3:
+            errors.append(f"기업 개요 항목이 3문장을 초과합니다: {label}")
+        matched, error = _match_source_label(source, allowed_labels)
+        if error:
+            errors.append(f"기업 개요 항목의 출처가 유효하지 않습니다: {error} / label={label}")
+            lines.append(f"{label}: {fact}")
+            continue
+        lines.append(f"{label}: {fact} [출처: {matched}]")
+    return lines, errors
+
+
 def _normalized_fact_key(fact: str) -> str:
     fact = _clean_summary_line(fact)
     fact = re.sub(r"\[[^\]]+\]", "", fact)
@@ -755,10 +833,19 @@ def _prepare_structured_payload(
     prepared = dict(payload)
     stats: dict[str, dict[str, int]] = {}
     for key in SUMMARY_SECTION_KEYS:
-        items = _coerce_items(payload, key)
-        deduped = _dedupe_items(items)
-        capped = _cap_items(deduped, max_items[key])
-        prepared[key] = capped
+        items = _coerce_overview_items(payload) if key == "overview" else _coerce_items(payload, key)
+        if key == "overview":
+            deduped = items
+            capped = items[:3]
+            prepared[key] = {
+                "core_bm": capped[0] if len(capped) >= 1 else {"fact": NO_INFO, "source": ""},
+                "current_market_position": capped[1] if len(capped) >= 2 else {"fact": NO_INFO, "source": ""},
+                "future_growth_momentum": capped[2] if len(capped) >= 3 else {"fact": NO_INFO, "source": ""},
+            }
+        else:
+            deduped = _dedupe_items(items)
+            capped = _cap_items(deduped, max_items[key])
+            prepared[key] = capped
         stats[key] = {
             "before_dedupe": len(items),
             "after_dedupe": len(deduped),
@@ -801,8 +888,9 @@ def structured_payload_to_summary(
     presentation_month: str = "",
     raw_excerpt: str = "",
 ) -> tuple[Summary, list[str]]:
-    overview, overview_errors = _lines_from_structured_items(
-        "기업 개요", _coerce_items(payload, "overview"), allowed_labels
+    overview, overview_errors = _overview_lines_from_items(
+        _coerce_overview_items(payload),
+        allowed_labels,
     )
     thesis, thesis_errors = _lines_from_structured_items(
         "투자 아이디어", _coerce_items(payload, "thesis"), allowed_labels

@@ -10,7 +10,7 @@ summarizer:
   max_tokens: 6000
   max_retries: 1
   max_items:
-    overview: 5
+    overview: 3
     thesis: 8
     risks: 8
   compact_retry_max_items:

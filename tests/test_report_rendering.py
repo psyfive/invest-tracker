@@ -23,8 +23,8 @@ PRESENTATION_CLOSE = "\ubc1c\ud45c\uc2dc\uc810 \uc885\uac00"
 CHANGE_PCT = "\ub4f1\ub77d\ub960"
 MARKET_CAP = "\uc2dc\uac00\ucd1d\uc561"
 CORE_BM = "\ud575\uc2ec BM"
-MARKET_POSITION = "\uc2dc\uc7a5 \uc9c0\uc704"
-GROWTH_MOMENTUM = "\uc131\uc7a5 \ubaa8\uba58\ud140"
+MARKET_POSITION = "\ud604\uc7ac \uc2dc\uc7a5 \uc9c0\uc704"
+GROWTH_MOMENTUM = "\uc55e\uc73c\ub85c\uc758 \uc131\uc7a5 \ubaa8\uba58\ud140"
 NO_INFO = "\uc790\ub8cc \ub0b4 \uba85\uc2dc \uc5c6\uc74c"
 
 
@@ -86,6 +86,8 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn(GROWTH_MOMENTUM, html)
         self.assertIn(NO_INFO, html)
         self.assertIn(SOURCE_MARKER, html)
+        self.assertIn('color:#d32f2f', html)
+        self.assertIn('color:#1976d2', html)
         self.assertNotIn("Conclusion / checkpoints", html)
         self.assertNotIn(REMOVED_CONCLUSION, html)
         self.assertNotIn("Price snapshot", html)
@@ -127,6 +129,13 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn("table", toggle_child_types)
         self.assertNotIn("bulleted_list_item", toggle_child_types)
 
+        table = next(child for child in toggle["toggle"]["children"] if child["type"] == "table")
+        rows = table["table"]["children"]
+        current_change_cell = rows[1]["table_row"]["cells"][3][0]
+        presentation_change_cell = rows[4]["table_row"]["cells"][3][0]
+        self.assertEqual(current_change_cell["annotations"]["color"], "red")
+        self.assertEqual(presentation_change_cell["annotations"]["color"], "blue")
+
     def test_html_does_not_invent_source_markers(self) -> None:
         summary = Summary(
             company="A Corp",
@@ -140,6 +149,34 @@ class ReportRenderingTests(unittest.TestCase):
 
         self.assertNotIn("[\ucd9c\ucc98: voice.docx]", html)
 
+    def test_notion_price_table_uses_gray_for_flat_change(self) -> None:
+        flat_snap = PriceSnapshot(
+            ticker="000001.KS",
+            fetched_at="now",
+            last_close=1000,
+            prev_close=1000,
+            change_pct=0.0,
+            currency="KRW",
+            presentation_close={"date": "2026-04-30", "close": 610, "change_pct": 0.0},
+            last_5_closes=[
+                {"date": "2026-05-07", "close": 980},
+                {"date": "2026-05-08", "close": 990},
+                {"date": "2026-05-11", "close": 1000},
+                {"date": "2026-05-12", "close": 1000},
+                {"date": "2026-05-13", "close": 1000},
+            ],
+        )
+
+        blocks = blocks_for_post(self.summary, flat_snap, sources=["deck.pdf"])
+        html = render_post(self.summary, flat_snap, sources=["deck.pdf"])
+        toggle = next(block for block in blocks if block["type"] == "toggle")
+        table = next(child for child in toggle["toggle"]["children"] if child["type"] == "table")
+        rows = table["table"]["children"]
+
+        self.assertEqual(rows[1]["table_row"]["cells"][3][0]["annotations"]["color"], "gray")
+        self.assertEqual(rows[4]["table_row"]["cells"][3][0]["annotations"]["color"], "gray")
+        self.assertIn('color:#666', html)
+
     def test_llm_prompt_requires_citations_and_variable_item_counts(self) -> None:
         prompt = SUMMARY_PROMPT.format(
             company="A Corp",
@@ -147,6 +184,7 @@ class ReportRenderingTests(unittest.TestCase):
             presenter="Kim",
             presentation_month="26.04",
             allowed_labels="- deck.pdf/Page 1",
+            item_limits="- overview: at most 3 items",
         )
 
         self.assertIn(CORE_BM, prompt)

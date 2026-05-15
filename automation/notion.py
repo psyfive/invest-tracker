@@ -224,11 +224,14 @@ def target_from_config(config: dict[str, Any]) -> NotionTarget | None:
     )
 
 
-def _rich_text(text: str) -> list[dict[str, Any]]:
+def _rich_text(text: str, color: str = "default") -> list[dict[str, Any]]:
     text = text or ""
     if not text:
         return [{"text": {"content": ""}}]
-    return [{"text": {"content": text[:2000]}}]
+    item: dict[str, Any] = {"text": {"content": text[:2000]}}
+    if color != "default":
+        item["annotations"] = {"color": color}
+    return [item]
 
 
 def _plain_text(rich_text: list[dict[str, Any]]) -> str:
@@ -344,11 +347,12 @@ def _blocks_from_overview_lines(text: str, fallback_source: str = "") -> list[di
     return [_paragraph(line) for line in normalize_overview_lines(text, "")]
 
 
-def _table_row(cells: list[str]) -> dict[str, Any]:
+def _table_row(cells: list[str | list[dict[str, Any]]]) -> dict[str, Any]:
+    rich_cells = [cell if isinstance(cell, list) else _rich_text(cell) for cell in cells]
     return {
         "object": "block",
         "type": "table_row",
-        "table_row": {"cells": [_rich_text(cell) for cell in cells]},
+        "table_row": {"cells": rich_cells},
     }
 
 
@@ -498,13 +502,14 @@ def _fmt_money(value: float | None, currency: str | None = None) -> str:
 def _price_summary_table(snap: PriceSnapshot) -> dict[str, Any]:
     children = [_table_row(PRICE_SUMMARY_HEADERS)]
     for row in build_price_summary_rows(snap):
+        change_color = "red" if (row.change_pct or 0) > 0 else ("blue" if (row.change_pct or 0) < 0 else "gray")
         children.append(
             _table_row(
                 [
                     row.label,
                     row.date,
                     format_close(row.close, snap.currency),
-                    format_change_pct(row.change_pct),
+                    _rich_text(format_change_pct(row.change_pct), change_color),
                     format_market_cap(row.market_cap, snap.currency),
                 ]
             )
