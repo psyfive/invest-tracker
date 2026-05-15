@@ -7,6 +7,7 @@ summarizer:
   mode: rule
   model: gemini-2.5-flash
   sector_model: claude-haiku-4-5-20251001
+  max_tokens: 6000
   max_retries: 1
   debug_dir: output/debug
 

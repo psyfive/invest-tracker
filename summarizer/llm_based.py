@@ -48,6 +48,7 @@ Rules:
 - Do not mention a source unless that exact source block actually supports the claim.
 - The source field must be one of the allowed labels. Do not translate or reformat it.
 - For "자료 내 명시 없음" items, leave source empty.
+- Keep each fact to one concise sentence. Do not emit headings, labels-only items, or repeated explanations.
 
 Company: {company}
 Ticker: {ticker}
@@ -61,9 +62,11 @@ Allowed source labels:
 REPAIR_PROMPT = """The previous answer failed validation:
 {errors}
 
-Rewrite the summary as JSON using the same response schema. Keep only claims supported
-by the provided source blocks. Every factual item must use one source copied from the
-allowed source labels below. Do not translate, shorten, or reformat source labels.
+Regenerate the summary from the source blocks as one complete compact JSON object using
+the same response schema. Do not reuse partial or malformed JSON from the previous answer.
+Keep only claims supported by the provided source blocks. Every factual item must use one
+source copied from the allowed source labels below. Do not translate, shorten, or reformat
+source labels. Keep each fact to one concise sentence.
 
 Allowed source labels:
 {allowed_labels}
@@ -570,6 +573,40 @@ def _parse_response_json(text: str) -> dict[str, Any]:
     return data
 
 
+def _json_error_context(text: str, error: json.JSONDecodeError, radius: int = 80) -> str:
+    start = max(0, error.pos - radius)
+    end = min(len(text), error.pos + radius)
+    snippet = text[start:end].replace("\n", "\\n")
+    return f"{error.msg} at line {error.lineno} column {error.colno}; near={snippet!r}"
+
+
+def _response_metadata(response: Any) -> dict[str, Any]:
+    candidates = getattr(response, "candidates", None) or []
+    first_candidate = candidates[0] if candidates else None
+    finish_reason = getattr(first_candidate, "finish_reason", None) if first_candidate is not None else None
+    if hasattr(finish_reason, "value"):
+        finish_reason = finish_reason.value
+    elif finish_reason is not None:
+        finish_reason = str(finish_reason)
+
+    usage = getattr(response, "usage_metadata", None)
+    usage_payload: dict[str, Any] = {}
+    for name in [
+        "prompt_token_count",
+        "candidates_token_count",
+        "total_token_count",
+        "cached_content_token_count",
+    ]:
+        value = getattr(usage, name, None) if usage is not None else None
+        if value is not None:
+            usage_payload[name] = value
+
+    return {
+        "finish_reason": finish_reason,
+        "usage_metadata": usage_payload,
+    }
+
+
 def _coerce_items(payload: dict[str, Any], key: str) -> list[dict[str, str]]:
     raw = payload.get(key, [])
     if isinstance(raw, dict):
@@ -710,6 +747,8 @@ class LLMSummarizer(Summarizer):
         self.fallback_on_error = fallback_on_error
         self.api_retries = api_retries
         self.sleep_func = sleep_func
+        self._genai_client: Any | None = None
+        self._last_response_metadata: dict[str, Any] = {}
 
     def _client(self) -> Any:
         try:
@@ -719,7 +758,9 @@ class LLMSummarizer(Summarizer):
 
         if not self.api_key:
             raise RuntimeError("GEMINI_API_KEY is not set")
-        return genai.Client(api_key=self.api_key)
+        if self._genai_client is None:
+            self._genai_client = genai.Client(api_key=self.api_key)
+        return self._genai_client
 
     def _call_api(self, documents: list[SourceDocument], prompt: str) -> str:
         contents = [
@@ -727,37 +768,20 @@ class LLMSummarizer(Summarizer):
             prompt,
         ]
         schema = _summary_response_schema()
-        configs = [
-            {
-                "max_output_tokens": self.max_tokens,
-                "response_format": {
-                    "text": {
-                        "mime_type": "application/json",
-                        "schema": schema,
-                    }
-                },
-            },
-            {
-                "max_output_tokens": self.max_tokens,
-                "response_mime_type": "application/json",
-                "response_schema": schema,
-            },
-        ]
-        config_index = 0
         last_error: Exception | None = None
         for attempt in range(self.api_retries + 1):
             try:
                 response = self._client().models.generate_content(
                     model=self.model,
                     contents=contents,
-                    config=configs[config_index],
+                    config={
+                        "max_output_tokens": self.max_tokens,
+                        "response_mime_type": "application/json",
+                        "response_json_schema": schema,
+                    },
                 )
+                self._last_response_metadata = _response_metadata(response)
                 return str(getattr(response, "text", "") or "")
-            except TypeError as e:
-                if config_index == 0 and "response_format" in str(e):
-                    config_index = 1
-                    continue
-                raise
             except Exception as e:
                 last_error = e
                 if attempt >= self.api_retries or not _is_retryable_api_error(e):
@@ -786,6 +810,7 @@ class LLMSummarizer(Summarizer):
             "errors": errors,
             "response_text": response_text,
             "structured_payload": structured_payload,
+            "response_metadata": self._last_response_metadata,
             "allowed_labels": allowed_labels,
             "documents": [
                 {"title": doc.title, "block_labels": doc.block_labels}
@@ -825,8 +850,35 @@ class LLMSummarizer(Summarizer):
             try:
                 response_text = self._call_api(documents, call_prompt)
                 structured_payload = _parse_response_json(response_text)
-            except (json.JSONDecodeError, ValueError) as e:
+            except json.JSONDecodeError as e:
+                finish_reason = self._last_response_metadata.get("finish_reason")
+                prefix = (
+                    "Gemini response appears truncated at max_output_tokens"
+                    if finish_reason == "MAX_TOKENS"
+                    else "Gemini response JSON parsing failed"
+                )
+                errors = [f"{prefix}: {_json_error_context(response_text, e)}"]
+                self._write_debug(
+                    company,
+                    ticker,
+                    response_text,
+                    errors,
+                    documents,
+                    structured_payload,
+                    allowed_labels,
+                )
+                continue
+            except ValueError as e:
                 errors = [f"Gemini response JSON parsing failed: {e}"]
+                self._write_debug(
+                    company,
+                    ticker,
+                    response_text,
+                    errors,
+                    documents,
+                    structured_payload,
+                    allowed_labels,
+                )
                 continue
 
             summary, errors = structured_payload_to_summary(

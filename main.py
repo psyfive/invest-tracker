@@ -238,6 +238,8 @@ def process_config(
     if mode == "llm":
         if "model" in summ_cfg:
             summ_kwargs["model"] = summ_cfg["model"]
+        if "max_tokens" in summ_cfg:
+            summ_kwargs["max_tokens"] = int(summ_cfg["max_tokens"])
         if "max_retries" in summ_cfg:
             summ_kwargs["max_retries"] = int(summ_cfg["max_retries"])
         debug_dir = summ_cfg.get("debug_dir", output_dir / "debug")

@@ -8,6 +8,7 @@ from summarizer.llm_based import (
     _document_blocks_from_files,
     _documents_prompt_text,
     _match_source_label,
+    _response_metadata,
     parse_summary_markdown,
     structured_payload_to_summary,
     validate_cited_summary,
@@ -256,6 +257,43 @@ class LLMCitationSummaryTests(unittest.TestCase):
         self.assertEqual(len(summarizer.sleeps), 2)
         self.assertGreaterEqual(summarizer.sleeps[0], 1)
         self.assertGreaterEqual(summarizer.sleeps[1], 2)
+
+    def test_client_is_reused_across_calls(self) -> None:
+        class ReuseSummarizer(LLMSummarizer):
+            def __init__(self) -> None:
+                self.created = 0
+                super().__init__(api_key="test")
+
+            def _client(self):
+                if self._genai_client is None:
+                    self.created += 1
+                    self._genai_client = SimpleNamespace()
+                return self._genai_client
+
+        summarizer = ReuseSummarizer()
+
+        first = summarizer._client()
+        second = summarizer._client()
+
+        self.assertIs(first, second)
+        self.assertEqual(summarizer.created, 1)
+
+    def test_response_metadata_captures_finish_reason_and_usage(self) -> None:
+        response = SimpleNamespace(
+            candidates=[SimpleNamespace(finish_reason="MAX_TOKENS")],
+            usage_metadata=SimpleNamespace(
+                prompt_token_count=120,
+                candidates_token_count=80,
+                total_token_count=200,
+            ),
+        )
+
+        metadata = _response_metadata(response)
+
+        self.assertEqual(metadata["finish_reason"], "MAX_TOKENS")
+        self.assertEqual(metadata["usage_metadata"]["prompt_token_count"], 120)
+        self.assertEqual(metadata["usage_metadata"]["candidates_token_count"], 80)
+        self.assertEqual(metadata["usage_metadata"]["total_token_count"], 200)
 
 
 if __name__ == "__main__":
