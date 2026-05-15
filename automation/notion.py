@@ -13,6 +13,14 @@ from price.indicator import (
     format_target_position_line,
     parse_target_price_value,
 )
+from price.summary_table import (
+    PRICE_SUMMARY_HEADERS,
+    PRICE_SUMMARY_LABEL,
+    build_price_summary_rows,
+    format_change_pct,
+    format_close,
+    format_market_cap,
+)
 from summarizer.base import Summary
 from summarizer.overview import normalize_overview_lines
 
@@ -418,6 +426,10 @@ def page_market(page: dict[str, Any], market_property: str = PROP_MARKET) -> str
     return _property_text((page.get("properties") or {}).get(market_property)).strip().upper()
 
 
+def page_presentation_month(page: dict[str, Any], month_property: str = PROP_MONTH) -> str:
+    return _property_text((page.get("properties") or {}).get(month_property)).strip()
+
+
 def is_korean_market_page(page: dict[str, Any]) -> bool:
     ticker = page_ticker(page)
     market = page_market(page)
@@ -483,20 +495,40 @@ def _fmt_money(value: float | None, currency: str | None = None) -> str:
     return f"{text} {unit}".strip()
 
 
+def _price_summary_table(snap: PriceSnapshot) -> dict[str, Any]:
+    children = [_table_row(PRICE_SUMMARY_HEADERS)]
+    for row in build_price_summary_rows(snap):
+        children.append(
+            _table_row(
+                [
+                    row.label,
+                    row.date,
+                    format_close(row.close, snap.currency),
+                    format_change_pct(row.change_pct),
+                    format_market_cap(row.market_cap, snap.currency),
+                ]
+            )
+        )
+    return {
+        "object": "block",
+        "type": "table",
+        "table": {
+            "table_width": len(PRICE_SUMMARY_HEADERS),
+            "has_column_header": True,
+            "has_row_header": False,
+            "children": children,
+        },
+    }
+
+
 def price_trend_toggle_block(snap: PriceSnapshot, target_price_text: str = "") -> dict[str, Any]:
     position = build_target_position(snap, parse_target_price_value(target_price_text))
     children: list[dict[str, Any]] = [
         _paragraph(format_target_position_line(position)),
         _paragraph(format_target_detail_line(position)),
+        _paragraph(PRICE_SUMMARY_LABEL),
+        _price_summary_table(snap),
     ]
-    if snap.last_5_closes:
-        children.extend(
-            _bulleted_item(f"{row.get('date', '-')}: {row.get('close', '-')}")
-            for row in snap.last_5_closes
-        )
-    else:
-        ticker = snap.ticker or "-"
-        children.append(_paragraph(f"{ticker}: {snap.status} ({snap.fetched_at})"))
     return _toggle(PRICE_TREND_LABEL, children)
 
 

@@ -225,7 +225,23 @@ csv_path: prices.csv
             FakeRefreshNotionClient.updates = []
 
             with (
-                patch("main.fetch_price_snapshot", return_value=PriceSnapshot(ticker="000001.KS", fetched_at="now", last_close=30500)),
+                patch(
+                    "main.fetch_price_snapshot",
+                    return_value=PriceSnapshot(
+                        ticker="000001.KS",
+                        fetched_at="now",
+                        last_close=30500,
+                        prev_close=30000,
+                        currency="KRW",
+                        market_cap=1_200_000_000_000,
+                        presentation_close={"date": "2026-04-30", "close": 28000},
+                        last_5_closes=[
+                            {"date": "2026-05-11", "close": 29500},
+                            {"date": "2026-05-12", "close": 30000},
+                            {"date": "2026-05-13", "close": 30500},
+                        ],
+                    ),
+                ),
                 patch("main.save_snapshot"),
                 patch("main.target_from_config", return_value=NotionTarget(token="token", database_id="db")),
                 patch("main.NotionClient", FakeRefreshNotionClient),
@@ -240,6 +256,9 @@ csv_path: prices.csv
         self.assertIn("\ubaa9\ud45c\uac00 \ub300\ube44 \uc704\uce58", serialized)
         self.assertIn("50.0%", serialized)
         self.assertIn("61,000\uc6d0", serialized)
+        self.assertIn("\uc8fc\uac00 \uc694\uc57d \ud45c", serialized)
+        self.assertIn("\ubc1c\ud45c\uc2dc\uc810 \uc885\uac00", serialized)
+        self.assertIn("28,000\uc6d0", serialized)
 
 
 if __name__ == "__main__":

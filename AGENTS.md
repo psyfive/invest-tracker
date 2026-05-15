@@ -31,6 +31,9 @@ Reports should render with:
 
 - a `실시간 주가 추이` toggle near the top
 - a target-price position indicator inside that toggle
+- a `주가 요약 표` inside that toggle with current, previous close,
+  two-days-ago close, presentation-month last trading close, change %, and
+  market cap
 - a company overview section
 - a two-column `투자 아이디어 & 투자 리스크` table
 - source file references

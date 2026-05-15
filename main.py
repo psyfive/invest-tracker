@@ -18,6 +18,7 @@ from automation.notion import (
     NotionClient,
     blocks_for_post,
     is_korean_market_page,
+    page_presentation_month,
     page_title,
     page_ticker,
     price_trend_toggle_block,
@@ -306,7 +307,7 @@ def process_config(
             except Exception as e:
                 print(f"  [warning] sector classification failed: {e}", file=sys.stderr)
 
-        price = fetch_price_snapshot(ticker)
+        price = fetch_price_snapshot(ticker, presentation_month)
         try:
             save_snapshot(price, db_path=db_path, csv_path=csv_path)
             print(f"  price: {price.status} (last={price.last_close})")
@@ -419,15 +420,24 @@ def cmd_refresh_prices(args: argparse.Namespace) -> int:
     csv_path = _resolve_config_path(base_dir, config.get("csv_path", "output/prices.csv"), "output/prices.csv")
 
     presentations = config.get("presentations", []) or []
-    tickers = sorted({(entry.get("ticker") or "").strip() for entry in presentations if (entry.get("ticker") or "").strip()})
-    if not tickers:
+    snapshot_keys = sorted(
+        {
+            (
+                (entry.get("ticker") or "").strip(),
+                (entry.get("presentation_month") or "").strip(),
+            )
+            for entry in presentations
+            if (entry.get("ticker") or "").strip()
+        }
+    )
+    if not snapshot_keys:
         print("no tickers found in config", file=sys.stderr)
         return 1
 
-    snapshots: dict[str, PriceSnapshot] = {}
-    for ticker in tickers:
-        snap = fetch_price_snapshot(ticker)
-        snapshots[ticker] = snap
+    snapshots: dict[tuple[str, str], PriceSnapshot] = {}
+    for ticker, presentation_month in snapshot_keys:
+        snap = fetch_price_snapshot(ticker, presentation_month)
+        snapshots[(ticker, presentation_month)] = snap
         save_snapshot(snap, db_path=db_path, csv_path=csv_path)
         print(f"{ticker:14} {snap.status} last={snap.last_close}")
 
@@ -447,7 +457,7 @@ def cmd_refresh_prices(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 continue
-            snap = snapshots.get(ticker)
+            snap = snapshots.get((ticker, presentation_month))
             if snap is None:
                 continue
             text, _used_files = _gather_text(entry.get("files", []) or [], base_dir)
@@ -487,7 +497,8 @@ def cmd_refresh_notion_prices(args: argparse.Namespace) -> int:
             skipped += 1
             continue
 
-        snap = fetch_price_snapshot(ticker)
+        presentation_month = page_presentation_month(page, target.month_property)
+        snap = fetch_price_snapshot(ticker, presentation_month)
         save_snapshot(snap, db_path=db_path, csv_path=csv_path)
         target_price_text = client.extract_price_trend_target_text(page_id)
         client.replace_price_trend_toggle(page_id, price_trend_toggle_block(snap, target_price_text))

@@ -1,8 +1,9 @@
 """Fetch price snapshots with yfinance."""
 from __future__ import annotations
 
+import calendar
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 
@@ -16,6 +17,8 @@ class PriceSnapshot:
     currency: Optional[str] = None
     name: Optional[str] = None
     market_cap: Optional[float] = None
+    recent_closes: list[dict] = field(default_factory=list)
+    presentation_close: Optional[dict] = None
     last_5_closes: list[dict] = field(default_factory=list)
     status: str = "ok"
 
@@ -41,7 +44,28 @@ def failed_snapshot(ticker: str, reason: str) -> PriceSnapshot:
     return PriceSnapshot(ticker=ticker, fetched_at=now, status=reason)
 
 
-def fetch_price_snapshot(ticker: str) -> PriceSnapshot:
+def _parse_presentation_month(value: str | None) -> tuple[date, date] | None:
+    if not value:
+        return None
+    try:
+        year_text, month_text = value.strip().split(".", 1)
+        year = int(year_text)
+        month = int(month_text)
+    except (AttributeError, ValueError):
+        return None
+    if not 1 <= month <= 12:
+        return None
+    if year < 100:
+        year += 2000
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, 1), date(year, month, last_day)
+
+
+def _close_entry(index, value: float) -> dict:
+    return {"date": index.strftime("%Y-%m-%d"), "close": round(float(value), 4)}
+
+
+def fetch_price_snapshot(ticker: str, presentation_month: str = "") -> PriceSnapshot:
     """Fetch a latest-price snapshot.
 
     Failures are returned in ``status`` instead of being raised, so monthly
@@ -62,7 +86,18 @@ def fetch_price_snapshot(ticker: str) -> PriceSnapshot:
 
     try:
         symbol = yf.Ticker(ticker)
-        hist = symbol.history(period="10d", auto_adjust=False)
+        presentation_range = _parse_presentation_month(presentation_month)
+        if presentation_range:
+            start, _end = presentation_range
+            hist = symbol.history(
+                start=start.isoformat(),
+                end=(date.today() + timedelta(days=1)).isoformat(),
+                auto_adjust=False,
+            )
+        else:
+            hist = symbol.history(period="10d", auto_adjust=False)
+        if (hist is None or hist.empty) and presentation_range:
+            hist = symbol.history(period="10d", auto_adjust=False)
         if hist is None or hist.empty:
             snap.status = "price lookup failed: no history"
             return snap
@@ -82,9 +117,32 @@ def fetch_price_snapshot(ticker: str) -> PriceSnapshot:
                 snap.change_pct = round((last_close - prev_close) / prev_close * 100, 2)
 
         snap.last_5_closes = [
-            {"date": idx.strftime("%Y-%m-%d"), "close": round(float(value), 4)}
+            _close_entry(idx, value)
             for idx, value in closes.tail(5).items()
         ]
+        snap.recent_closes = [
+            _close_entry(idx, value)
+            for idx, value in closes.tail(3).items()
+        ]
+        if presentation_range:
+            start, end = presentation_range
+            month_closes = closes[
+                (closes.index.date >= start)
+                & (closes.index.date <= end)
+            ]
+            if not month_closes.empty:
+                presentation_idx = month_closes.index[-1]
+                presentation_value = float(month_closes.iloc[-1])
+                presentation_close = _close_entry(presentation_idx, presentation_value)
+                close_index = closes.index.tolist().index(presentation_idx)
+                if close_index > 0:
+                    previous_value = float(closes.iloc[close_index - 1])
+                    if previous_value:
+                        presentation_close["change_pct"] = round(
+                            (presentation_value - previous_value) / previous_value * 100,
+                            2,
+                        )
+                snap.presentation_close = presentation_close
 
         try:
             fast_info = symbol.fast_info

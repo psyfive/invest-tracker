@@ -70,8 +70,9 @@ The `실시간 주가 추이` toggle contains:
 
 - target-price position indicator
 - current price and target price detail
-- recent close prices when yfinance returns them
-- price lookup status when recent prices are unavailable
+- a `주가 요약 표` with current, previous close, two-days-ago close,
+  presentation-month last trading close, change %, and market cap
+- blank cells rendered as `-` when a price point is unavailable
 
 Target prices are extracted from source text. Base/consensus target prices are
 preferred over generic target prices:

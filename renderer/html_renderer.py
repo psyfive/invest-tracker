@@ -13,28 +13,20 @@ from price.indicator import (
     format_target_position_line,
     parse_target_price_value,
 )
+from price.summary_table import (
+    PRICE_SUMMARY_HEADERS,
+    PRICE_SUMMARY_LABEL,
+    build_price_summary_rows,
+    format_change_pct,
+    format_close,
+    format_market_cap,
+)
 from summarizer.base import Summary
 from summarizer.overview import normalize_overview_lines
 
 
 def _esc(value: str | None) -> str:
     return html.escape(str(value or ""), quote=True)
-
-
-def _fmt_num(value: float | None, digits: int = 2) -> str:
-    if value is None:
-        return "-"
-    if abs(value) >= 1000:
-        return f"{value:,.{digits}f}"
-    return f"{value:.{digits}f}"
-
-
-def _fmt_pct(value: float | None) -> str:
-    if value is None:
-        return "-"
-    sign = "+" if value > 0 else ""
-    color = "#d32f2f" if value > 0 else ("#1976d2" if value < 0 else "#666")
-    return f'<span style="color:{color};font-weight:600">{sign}{value:.2f}%</span>'
 
 
 _SOURCE_RE = re.compile(r"\[(?:\ucd9c\ucc98|source)\s*:", re.IGNORECASE)
@@ -67,6 +59,34 @@ def _summary_lines(body: str, fallback_source: str = "") -> list[str]:
     return lines
 
 
+def _render_change_pct(value: float | None) -> str:
+    if value is None:
+        return "-"
+    color = "#d32f2f" if value > 0 else ("#1976d2" if value < 0 else "#666")
+    return f'<span style="color:{color};font-weight:600">{_esc(format_change_pct(value))}</span>'
+
+
+def _render_price_summary_table(snap: PriceSnapshot) -> str:
+    rows = "".join(
+        "<tr>"
+        f"<td>{_esc(row.label)}</td>"
+        f'<td style="text-align:right">{_esc(row.date)}</td>'
+        f'<td style="text-align:right">{_esc(format_close(row.close, snap.currency))}</td>'
+        f'<td style="text-align:right">{_render_change_pct(row.change_pct)}</td>'
+        f'<td style="text-align:right">{_esc(format_market_cap(row.market_cap, snap.currency))}</td>'
+        "</tr>"
+        for row in build_price_summary_rows(snap)
+    )
+    header = "".join(f"<th>{_esc(text)}</th>" for text in PRICE_SUMMARY_HEADERS)
+    return (
+        f"<h3>{_esc(PRICE_SUMMARY_LABEL)}</h3>"
+        '<table border="1" cellspacing="0" cellpadding="6" '
+        'style="border-collapse:collapse;margin:8px 0;width:100%">'
+        f'<thead><tr style="background:#fafafa">{header}</tr></thead>'
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
 def _render_price_trend_toggle(snap: PriceSnapshot, target_price_text: str = "") -> str:
     position = build_target_position(snap, parse_target_price_value(target_price_text))
     indicator = (
@@ -75,24 +95,7 @@ def _render_price_trend_toggle(snap: PriceSnapshot, target_price_text: str = "")
         f"{_esc(format_target_detail_line(position))}"
         "</p>"
     )
-    if snap.last_5_closes:
-        rows = "".join(
-            f'<tr><td>{_esc(row["date"])}</td>'
-            f'<td style="text-align:right">{_fmt_num(row["close"])}</td></tr>'
-            for row in snap.last_5_closes
-        )
-        body = indicator + (
-            '<table border="1" cellspacing="0" cellpadding="6" '
-            'style="border-collapse:collapse;margin:8px 0">'
-            '<thead><tr style="background:#fafafa"><th>\ub0a0\uc9dc</th><th>\uc885\uac00</th></tr></thead>'
-            f"<tbody>{rows}</tbody></table>"
-        )
-    else:
-        ticker = snap.ticker or "-"
-        body = indicator + (
-            f"<p>{_esc(ticker)}: {_esc(snap.status)}"
-            f" ({_esc(snap.fetched_at)})</p>"
-        )
+    body = indicator + _render_price_summary_table(snap)
 
     return (
         "<details>"

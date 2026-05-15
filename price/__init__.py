@@ -10,6 +10,7 @@ from .indicator import (
     format_target_position_line,
     parse_target_price_value,
 )
+from .summary_table import build_price_summary_rows
 
 __all__ = [
     "fetch_price_snapshot",
@@ -22,4 +23,5 @@ __all__ = [
     "format_target_detail_line",
     "format_target_position_line",
     "parse_target_price_value",
+    "build_price_summary_rows",
 ]
