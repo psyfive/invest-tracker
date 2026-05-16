@@ -31,6 +31,7 @@ from price import (
     extract_target_price,
     fetch_price_snapshot,
     format_target_price_source_text,
+    parse_target_price_value,
     save_snapshot,
 )
 from readers import read_file
@@ -217,8 +218,9 @@ def _resolve_source_paths(file_paths: list[str], base_dir: Path) -> list[Path]:
 
 
 def _target_price_text_from_source(text: str, fallback: str = "") -> str:
-    if fallback.strip():
-        return fallback.strip()
+    fallback_text = fallback.strip()
+    if fallback_text and parse_target_price_value(fallback_text) is not None:
+        return fallback_text
     target = extract_target_price(text)
     if target is not None:
         return format_target_price_source_text(target)

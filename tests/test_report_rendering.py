@@ -86,6 +86,7 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn(MARKET_CAP, html)
         self.assertIn("1,000\uc6d0", html)
         self.assertIn("610\uc6d0", html)
+        self.assertIn("+63.93%", html)
         self.assertIn("4.20\uc870\uc6d0", html)
         self.assertIn(CORE_BM, html)
         self.assertIn(MARKET_POSITION, html)
@@ -123,6 +124,7 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn(MARKET_CAP, serialized)
         self.assertIn("1,000\uc6d0", serialized)
         self.assertIn("610\uc6d0", serialized)
+        self.assertIn("+63.93%", serialized)
         self.assertIn("4.20\uc870\uc6d0", serialized)
         self.assertIn(CORE_BM, serialized)
         self.assertIn(MARKET_POSITION, serialized)
@@ -145,7 +147,7 @@ class ReportRenderingTests(unittest.TestCase):
         current_change_cell = rows[1]["table_row"]["cells"][3][0]
         presentation_change_cell = rows[4]["table_row"]["cells"][3][0]
         self.assertEqual(current_change_cell["annotations"]["color"], "red")
-        self.assertEqual(presentation_change_cell["annotations"]["color"], "blue")
+        self.assertEqual(presentation_change_cell["annotations"]["color"], "red")
 
         overview_heading_index = next(
             index for index, block in enumerate(blocks)
@@ -197,7 +199,7 @@ class ReportRenderingTests(unittest.TestCase):
             prev_close=1000,
             change_pct=0.0,
             currency="KRW",
-            presentation_close={"date": "2026-04-30", "close": 610, "change_pct": 0.0},
+            presentation_close={"date": "2026-04-30", "close": 1000, "change_pct": -9.99},
             last_5_closes=[
                 {"date": "2026-05-07", "close": 980},
                 {"date": "2026-05-08", "close": 990},

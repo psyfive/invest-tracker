@@ -50,10 +50,8 @@ def _change_pct(current: float | None, previous: float | None) -> float | None:
     return round((current - previous) / previous * 100, 2)
 
 
-def _presentation_change(row: dict[str, Any] | None) -> float | None:
-    if not row:
-        return None
-    return _float_or_none(row.get("change_pct"))
+def _presentation_change(current_close: float | None, presentation_close: float | None) -> float | None:
+    return _change_pct(current_close, presentation_close)
 
 
 def build_price_summary_rows(snap: PriceSnapshot) -> list[PriceSummaryRow]:
@@ -85,7 +83,7 @@ def build_price_summary_rows(snap: PriceSnapshot) -> list[PriceSummaryRow]:
             PRESENTATION_LABEL,
             presentation_date,
             presentation_close,
-            _presentation_change(snap.presentation_close),
+            _presentation_change(current_close, presentation_close),
             None,
         ),
     ]
