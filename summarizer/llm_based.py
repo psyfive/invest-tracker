@@ -946,6 +946,16 @@ def _is_retryable_api_error(error: Exception) -> bool:
     )
 
 
+def _parse_retry_delay(error: Exception) -> float | None:
+    """Gemini 에러 응답에서 retryDelay 값(초)을 파싱한다."""
+    import re
+    text = str(error)
+    match = re.search(r"retrydelay['\"]:\s*['\"](\d+\.?\d*)s", text, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    return None
+
+
 def _normalized_item_limits(
     configured: dict[str, int] | None,
     defaults: dict[str, int],
@@ -1007,6 +1017,29 @@ class LLMSummarizer(Summarizer):
             self._genai_client = genai.Client(api_key=self.api_key)
         return self._genai_client
 
+    def _read_pdf_via_gemini(self, path: Path) -> SourceDocument:
+        """pypdf로 텍스트 추출 불가한 스캔 PDF를 Gemini Files API로 OCR 처리."""
+        print(f"  [ocr] Gemini Vision으로 PDF 텍스트 추출 중: {path.name}")
+        client = self._client()
+        with open(path, "rb") as f:
+            file_ref = client.files.upload(file=f, config={"mime_type": "application/pdf", "display_name": "source.pdf"})
+        response = client.models.generate_content(
+            model=self.model,
+            contents=[
+                file_ref,
+                "이 문서의 모든 텍스트를 추출하세요. 표, 수치, 섹션 제목 포함. 원문 구조를 유지하세요.",
+            ],
+        )
+        text = str(getattr(response, "text", "") or "")
+        chunks, labels = _split_text_chunks(path, text)
+        if not chunks:
+            raise RuntimeError(f"Gemini OCR가 텍스트를 반환하지 않음: {path.name}")
+        return SourceDocument(
+            title=path.name,
+            block_labels=labels,
+            content_block={"type": "source_blocks", "chunks": chunks},
+        )
+
     def _call_api(self, documents: list[SourceDocument], prompt: str) -> str:
         contents = [
             _documents_prompt_text(documents),
@@ -1031,7 +1064,13 @@ class LLMSummarizer(Summarizer):
                 last_error = e
                 if attempt >= self.api_retries or not _is_retryable_api_error(e):
                     raise
-                delay = (2**attempt) + random.uniform(0, 0.25)
+                parsed = _parse_retry_delay(last_error)
+                if parsed is not None:
+                    delay = parsed + random.uniform(0, 1.0)
+                elif _is_retryable_api_error(last_error):
+                    delay = max(2**attempt * 5, 12.0) + random.uniform(0, 1.0)
+                else:
+                    delay = (2**attempt) + random.uniform(0, 0.25)
                 self.sleep_func(delay)
         raise RuntimeError(f"Gemini API call failed: {last_error}")
 
@@ -1195,7 +1234,24 @@ class LLMSummarizer(Summarizer):
         paths = [Path(path).resolve() for path in file_paths if Path(path).exists()]
         if not paths:
             raise RuntimeError("no existing source files for LLM summarization")
-        documents = _document_blocks_from_files(paths)
+
+        documents: list[SourceDocument] = []
+        failures: list[str] = []
+        for path in paths:
+            try:
+                documents.append(_read_text_document(path))
+            except RuntimeError as e:
+                if path.suffix.lower() == ".pdf":
+                    try:
+                        documents.append(self._read_pdf_via_gemini(path))
+                        continue
+                    except Exception as ocr_e:
+                        failures.append(f"{path.name}: OCR 실패 ({ocr_e})")
+                else:
+                    failures.append(f"{path.name}: {e}")
+        if not documents:
+            raise RuntimeError("no readable source files for LLM summarization: " + "; ".join(failures))
+
         return self._summarize_documents(documents, company, ticker, presenter, presentation_month)
 
     def summarize(

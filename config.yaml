@@ -18,6 +18,7 @@ summarizer:
     thesis: 6
     risks: 6
   debug_dir: output/debug
+  request_interval: 15  # 보고서 간 대기 시간(초), Gemini 무료티어는 15초 권장
 
 # Static inputs still work with:
 #   python main.py run -c config.yaml

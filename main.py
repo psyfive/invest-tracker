@@ -5,6 +5,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -263,6 +264,7 @@ def process_config(
         debug_dir = summ_cfg.get("debug_dir", output_dir / "debug")
         summ_kwargs["debug_dir"] = str(_resolve_config_path(base_dir, debug_dir, "output/debug"))
     summarizer = get_summarizer(mode, **summ_kwargs)
+    request_interval = int(summ_cfg.get("request_interval", 0)) if mode == "llm" else 0
     print(f"[config] summarizer mode: {mode}")
 
     sector_classifier: SectorClassifier | None = None
@@ -278,7 +280,10 @@ def process_config(
         raise RuntimeError("no presentations to process")
 
     posts: list[GeneratedPost] = []
-    for entry in presentations:
+    for i, entry in enumerate(presentations):
+        if i > 0 and request_interval > 0:
+            print(f"  [rate-limit] {request_interval}초 대기 중...")
+            time.sleep(request_interval)
         company = (entry.get("company") or "").strip()
         ticker = (entry.get("ticker") or "").strip()
         presenter = (entry.get("presenter") or "").strip()
