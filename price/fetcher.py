@@ -20,6 +20,8 @@ class PriceSnapshot:
     recent_closes: list[dict] = field(default_factory=list)
     presentation_close: Optional[dict] = None
     last_5_closes: list[dict] = field(default_factory=list)
+    shares_outstanding: Optional[float] = None
+    presentation_market_cap: Optional[float] = None
     status: str = "ok"
 
     def to_row(self) -> dict:
@@ -37,6 +39,23 @@ class PriceSnapshot:
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+def _fetch_presentation_market_cap_krx(ticker: str, presentation_date: str) -> Optional[float]:
+    """pykrx로 발표시점 종가 날짜의 정확한 시가총액 조회 (한국 주식 전용)."""
+    try:
+        from pykrx import stock as krx_stock
+    except ImportError:
+        return None
+    try:
+        krx_code = ticker.split(".")[0]
+        date_fmt = presentation_date.replace("-", "")
+        df = krx_stock.get_market_cap_by_date(date_fmt, date_fmt, krx_code)
+        if df is not None and not df.empty and "시가총액" in df.columns:
+            return float(df["시가총액"].iloc[0])
+    except Exception:
+        pass
+    return None
 
 
 def failed_snapshot(ticker: str, reason: str) -> PriceSnapshot:
@@ -149,11 +168,15 @@ def fetch_price_snapshot(ticker: str, presentation_month: str = "") -> PriceSnap
             if isinstance(fast_info, dict):
                 snap.currency = fast_info.get("currency")
                 market_cap = fast_info.get("market_cap") or fast_info.get("marketCap")
+                shares = fast_info.get("shares")
             else:
                 snap.currency = getattr(fast_info, "currency", None)
                 market_cap = getattr(fast_info, "market_cap", None)
+                shares = getattr(fast_info, "shares", None)
             if market_cap is not None:
                 snap.market_cap = float(market_cap)
+            if shares is not None:
+                snap.shares_outstanding = float(shares)
         except Exception:
             pass
         try:
@@ -162,8 +185,17 @@ def fetch_price_snapshot(ticker: str, presentation_month: str = "") -> PriceSnap
             snap.currency = snap.currency or info.get("currency")
             if snap.market_cap is None and info.get("marketCap") is not None:
                 snap.market_cap = float(info["marketCap"])
+            if snap.shares_outstanding is None and info.get("sharesOutstanding") is not None:
+                snap.shares_outstanding = float(info["sharesOutstanding"])
         except Exception:
             pass
+
+        if snap.presentation_close:
+            p_date = snap.presentation_close.get("date", "")
+            if ticker.upper().endswith((".KS", ".KQ")):
+                snap.presentation_market_cap = _fetch_presentation_market_cap_krx(ticker, p_date)
+            if snap.presentation_market_cap is None and snap.shares_outstanding:
+                snap.presentation_market_cap = snap.presentation_close["close"] * snap.shares_outstanding
 
         snap.status = "ok"
     except Exception as e:

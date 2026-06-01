@@ -50,9 +50,6 @@ def _change_pct(current: float | None, previous: float | None) -> float | None:
     return round((current - previous) / previous * 100, 2)
 
 
-def _presentation_change(current_close: float | None, presentation_close: float | None) -> float | None:
-    return _change_pct(current_close, presentation_close)
-
 
 def build_price_summary_rows(snap: PriceSnapshot) -> list[PriceSummaryRow]:
     """Return the four rows used by HTML and Notion price toggles."""
@@ -66,26 +63,17 @@ def build_price_summary_rows(snap: PriceSnapshot) -> list[PriceSummaryRow]:
     if prev_close is None:
         prev_close = snap.prev_close
 
-    current_change = snap.change_pct
-    if current_change is None:
-        current_change = _change_pct(current_close, prev_close)
-
-    prev_change = _change_pct(prev_close, two_days_ago_close)
-    previous_for_two_days_ago = _float_or_none(closes[-4].get("close")) if len(closes) >= 4 else None
-    two_days_ago_change = _change_pct(two_days_ago_close, previous_for_two_days_ago)
-
     presentation_date, presentation_close = _close_row(snap.presentation_close)
+
     return [
-        PriceSummaryRow(CURRENT_LABEL, current_date, current_close, current_change, snap.market_cap),
-        PriceSummaryRow(PREV_LABEL, prev_date, prev_close, prev_change, None),
-        PriceSummaryRow(TWO_DAYS_AGO_LABEL, two_days_ago_date, two_days_ago_close, two_days_ago_change, None),
-        PriceSummaryRow(
-            PRESENTATION_LABEL,
-            presentation_date,
-            presentation_close,
-            _presentation_change(current_close, presentation_close),
-            None,
-        ),
+        PriceSummaryRow(CURRENT_LABEL, current_date, current_close,
+                        _change_pct(current_close, presentation_close), snap.market_cap),
+        PriceSummaryRow(PREV_LABEL, prev_date, prev_close,
+                        _change_pct(prev_close, presentation_close), None),
+        PriceSummaryRow(TWO_DAYS_AGO_LABEL, two_days_ago_date, two_days_ago_close,
+                        _change_pct(two_days_ago_close, presentation_close), None),
+        PriceSummaryRow(PRESENTATION_LABEL, presentation_date, presentation_close,
+                        None, snap.presentation_market_cap),
     ]
 
 

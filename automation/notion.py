@@ -176,18 +176,37 @@ class NotionClient:
     def archive_block(self, block_id: str) -> None:
         self.client.blocks.update(block_id=block_id, archived=True)
 
-    def append_blocks(self, block_id: str, children: list[dict[str, Any]]) -> None:
-        self.client.blocks.children.append(block_id=block_id, children=children[:100])
+    def append_blocks(self, block_id: str, children: list[dict[str, Any]], after: str = "") -> None:
+        kwargs: dict[str, Any] = {"block_id": block_id, "children": children[:100]}
+        if after:
+            kwargs["after"] = after
+        self.client.blocks.children.append(**kwargs)
 
     def replace_price_trend_toggle(self, page_id: str, toggle_block: dict[str, Any]) -> None:
+        existing_block_id: str = ""
+        after_block_id: str = ""
+
         for block in self.list_child_blocks(page_id):
-            if block.get("type") != "toggle":
-                continue
-            if _plain_text(block.get("toggle", {}).get("rich_text", [])) == PRICE_TREND_LABEL:
-                block_id = str(block.get("id") or "")
-                if block_id:
-                    self.archive_block(block_id)
-        self.append_blocks(page_id, [toggle_block])
+            block_type = block.get("type", "")
+            if block_type == "toggle":
+                if _plain_text(block.get("toggle", {}).get("rich_text", [])) == PRICE_TREND_LABEL:
+                    existing_block_id = str(block.get("id") or "")
+                    break
+            elif block_type == "paragraph":
+                text = _plain_text(block.get("paragraph", {}).get("rich_text", []))
+                if text.startswith("Presentation month:"):
+                    after_block_id = str(block.get("id") or "")
+
+        if existing_block_id:
+            for child in self.list_child_blocks(existing_block_id):
+                child_id = str(child.get("id") or "")
+                if child_id:
+                    self.archive_block(child_id)
+            new_children = toggle_block.get("toggle", {}).get("children", [])
+            if new_children:
+                self.append_blocks(existing_block_id, new_children)
+        else:
+            self.append_blocks(page_id, [toggle_block], after=after_block_id)
 
     def extract_price_trend_target_text(self, page_id: str) -> str:
         for block in self.list_child_blocks(page_id):
