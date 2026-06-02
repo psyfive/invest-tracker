@@ -22,6 +22,7 @@ class PriceSnapshot:
     last_5_closes: list[dict] = field(default_factory=list)
     shares_outstanding: Optional[float] = None
     presentation_market_cap: Optional[float] = None
+    monthly_closes: list[dict] = field(default_factory=list)
     status: str = "ok"
 
     def to_row(self) -> dict:
@@ -42,7 +43,7 @@ class PriceSnapshot:
 
 
 def _fetch_presentation_market_cap_krx(ticker: str, presentation_date: str) -> Optional[float]:
-    """pykrx로 발표시점 종가 날짜의 정확한 시가총액 조회 (한국 주식 전용)."""
+    """pykrx로 특정 날짜의 시가총액 조회 (한국 주식 전용)."""
     try:
         from pykrx import stock as krx_stock
     except ImportError:
@@ -56,6 +57,24 @@ def _fetch_presentation_market_cap_krx(ticker: str, presentation_date: str) -> O
     except Exception:
         pass
     return None
+
+
+def _fetch_market_cap_range_krx(ticker: str, start_date: str, end_date: str) -> dict[str, float]:
+    """pykrx로 날짜 범위의 시가총액을 배치 조회 (날짜 문자열 YYYYMMDD → 시총 dict)."""
+    try:
+        from pykrx import stock as krx_stock
+    except ImportError:
+        return {}
+    try:
+        krx_code = ticker.split(".")[0]
+        start_fmt = start_date.replace("-", "")
+        end_fmt = end_date.replace("-", "")
+        df = krx_stock.get_market_cap_by_date(start_fmt, end_fmt, krx_code)
+        if df is None or df.empty or "시가총액" not in df.columns:
+            return {}
+        return {idx.strftime("%Y%m%d"): float(val) for idx, val in df["시가총액"].items()}
+    except Exception:
+        return {}
 
 
 def failed_snapshot(ticker: str, reason: str) -> PriceSnapshot:
@@ -196,6 +215,56 @@ def fetch_price_snapshot(ticker: str, presentation_month: str = "") -> PriceSnap
                 snap.presentation_market_cap = _fetch_presentation_market_cap_krx(ticker, p_date)
             if snap.presentation_market_cap is None and snap.shares_outstanding:
                 snap.presentation_market_cap = snap.presentation_close["close"] * snap.shares_outstanding
+
+        # 발표월 다음달부터 전월까지 월별 마지막 거래일 종가 수집
+        if presentation_range and snap.presentation_close:
+            today = date.today()
+            p_year = presentation_range[0].year
+            p_month = presentation_range[0].month
+            monthly_entries: list[dict] = []
+            m_year = p_year + (1 if p_month == 12 else 0)
+            m_month = (p_month % 12) + 1
+            while (m_year, m_month) < (today.year, today.month):
+                m_last = calendar.monthrange(m_year, m_month)[1]
+                m_start = date(m_year, m_month, 1)
+                m_end = date(m_year, m_month, m_last)
+                m_closes = closes[
+                    (closes.index.date >= m_start) & (closes.index.date <= m_end)
+                ]
+                if not m_closes.empty:
+                    monthly_entries.append({
+                        "date": m_closes.index[-1].strftime("%Y-%m-%d"),
+                        "close": round(float(m_closes.iloc[-1]), 4),
+                        "market_cap": None,
+                        "label": f"{m_year}.{m_month:02d} 종가",
+                    })
+                m_month += 1
+                if m_month > 12:
+                    m_month = 1
+                    m_year += 1
+
+            if monthly_entries and ticker.upper().endswith((".KS", ".KQ")):
+                batch_start = monthly_entries[0]["date"]
+                batch_end = monthly_entries[-1]["date"]
+                all_caps = _fetch_market_cap_range_krx(ticker, batch_start, batch_end)
+                for entry in monthly_entries:
+                    cap_key = entry["date"].replace("-", "")
+                    cap = all_caps.get(cap_key)
+                    if cap is not None:
+                        entry["market_cap"] = cap
+            elif monthly_entries and snap.shares_outstanding:
+                for entry in monthly_entries:
+                    entry["market_cap"] = entry["close"] * snap.shares_outstanding
+
+            snap.monthly_closes = monthly_entries
+
+        # KRX 종목은 현재가 시총도 pykrx 기준으로 교체 (yfinance 발행주식수 불일치 방지)
+        if ticker.upper().endswith((".KS", ".KQ")) and snap.last_5_closes:
+            latest_date = snap.last_5_closes[-1].get("date", "")
+            if latest_date:
+                krx_cap = _fetch_presentation_market_cap_krx(ticker, latest_date)
+                if krx_cap is not None:
+                    snap.market_cap = krx_cap
 
         snap.status = "ok"
     except Exception as e:

@@ -18,7 +18,6 @@ class PriceSummaryRow:
 
 CURRENT_LABEL = "\ud604\uc7ac\uac00"
 PREV_LABEL = "\uc804\uc77c \uc885\uac00"
-TWO_DAYS_AGO_LABEL = "\uc774\ud2c0 \uc804 \uc885\uac00"
 PRESENTATION_LABEL = "\ubc1c\ud45c\uc2dc\uc810 \uc885\uac00"
 PRICE_SUMMARY_LABEL = "\uc8fc\uac00 \uc694\uc57d \ud45c"
 PRICE_SUMMARY_HEADERS = ["\uad6c\ubd84", "\uae30\uc900\uc77c", "\uc885\uac00", "\ub4f1\ub77d\ub960", "\uc2dc\uac00\ucd1d\uc561"]
@@ -52,11 +51,13 @@ def _change_pct(current: float | None, previous: float | None) -> float | None:
 
 
 def build_price_summary_rows(snap: PriceSnapshot) -> list[PriceSummaryRow]:
-    """Return the four rows used by HTML and Notion price toggles."""
+    """Return rows used by HTML and Notion price toggles.
+
+    Order: 발표시점 종가 → 월별 종가(오래된 순) → 전일 종가 → 현재가
+    """
     closes = _ordered_closes(snap)
     current_date, current_close = _close_row(closes[-1] if len(closes) >= 1 else None)
     prev_date, prev_close = _close_row(closes[-2] if len(closes) >= 2 else None)
-    two_days_ago_date, two_days_ago_close = _close_row(closes[-3] if len(closes) >= 3 else None)
 
     if current_close is None:
         current_close = snap.last_close
@@ -65,16 +66,24 @@ def build_price_summary_rows(snap: PriceSnapshot) -> list[PriceSummaryRow]:
 
     presentation_date, presentation_close = _close_row(snap.presentation_close)
 
-    return [
-        PriceSummaryRow(CURRENT_LABEL, current_date, current_close,
-                        _change_pct(current_close, presentation_close), snap.market_cap),
-        PriceSummaryRow(PREV_LABEL, prev_date, prev_close,
-                        _change_pct(prev_close, presentation_close), None),
-        PriceSummaryRow(TWO_DAYS_AGO_LABEL, two_days_ago_date, two_days_ago_close,
-                        _change_pct(two_days_ago_close, presentation_close), None),
+    rows: list[PriceSummaryRow] = [
         PriceSummaryRow(PRESENTATION_LABEL, presentation_date, presentation_close,
                         None, snap.presentation_market_cap),
     ]
+
+    for m in (snap.monthly_closes or []):
+        m_date = str(m.get("date") or "-")
+        m_close = _float_or_none(m.get("close"))
+        m_cap = _float_or_none(m.get("market_cap"))
+        m_label = str(m.get("label") or m_date)
+        rows.append(PriceSummaryRow(m_label, m_date, m_close,
+                                    _change_pct(m_close, presentation_close), m_cap))
+
+    rows.append(PriceSummaryRow(PREV_LABEL, prev_date, prev_close,
+                                _change_pct(prev_close, presentation_close), None))
+    rows.append(PriceSummaryRow(CURRENT_LABEL, current_date, current_close,
+                                _change_pct(current_close, presentation_close), snap.market_cap))
+    return rows
 
 
 def _format_number(value: float | None) -> str:

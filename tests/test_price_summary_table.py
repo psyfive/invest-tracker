@@ -1,12 +1,12 @@
 import unittest
 
 from price import PriceSnapshot
-from price.summary_table import PRESENTATION_LABEL, build_price_summary_rows
+from price.summary_table import CURRENT_LABEL, PRESENTATION_LABEL, PREV_LABEL, build_price_summary_rows
 
 
 class PriceSummaryTableTests(unittest.TestCase):
-    def test_presentation_row_uses_change_vs_current_price(self) -> None:
-        snap = PriceSnapshot(
+    def _make_snap(self, monthly_closes=None):
+        return PriceSnapshot(
             ticker="000001.KS",
             fetched_at="now",
             last_close=1000,
@@ -20,14 +20,44 @@ class PriceSummaryTableTests(unittest.TestCase):
                 {"date": "2026-05-12", "close": 990},
                 {"date": "2026-05-13", "close": 1000},
             ],
+            monthly_closes=monthly_closes or [],
         )
 
-        presentation_row = next(
-            row for row in build_price_summary_rows(snap)
-            if row.label == PRESENTATION_LABEL
-        )
+    def test_row_order_is_chronological(self):
+        snap = self._make_snap(monthly_closes=[
+            {"date": "2026-05-30", "close": 950, "market_cap": 1e12, "label": "2026.05 종가"},
+        ])
+        rows = build_price_summary_rows(snap)
+        labels = [r.label for r in rows]
+        self.assertEqual(labels, [PRESENTATION_LABEL, "2026.05 종가", PREV_LABEL, CURRENT_LABEL])
 
-        self.assertEqual(presentation_row.change_pct, 63.93)
+    def test_no_monthly_closes_gives_four_rows(self):
+        snap = self._make_snap()
+        rows = build_price_summary_rows(snap)
+        labels = [r.label for r in rows]
+        self.assertEqual(labels, [PRESENTATION_LABEL, PREV_LABEL, CURRENT_LABEL])
+
+    def test_presentation_change_pct_is_none(self):
+        snap = self._make_snap()
+        presentation_row = next(r for r in build_price_summary_rows(snap) if r.label == PRESENTATION_LABEL)
+        self.assertIsNone(presentation_row.change_pct)
+
+    def test_current_change_pct_vs_presentation(self):
+        snap = self._make_snap()
+        current_row = next(r for r in build_price_summary_rows(snap) if r.label == CURRENT_LABEL)
+        self.assertEqual(current_row.change_pct, 63.93)
+
+    def test_prev_row_has_no_market_cap(self):
+        snap = self._make_snap()
+        prev_row = next(r for r in build_price_summary_rows(snap) if r.label == PREV_LABEL)
+        self.assertIsNone(prev_row.market_cap)
+
+    def test_monthly_row_market_cap_populated(self):
+        snap = self._make_snap(monthly_closes=[
+            {"date": "2026-05-30", "close": 950, "market_cap": 1.5e12, "label": "2026.05 종가"},
+        ])
+        monthly_row = next(r for r in build_price_summary_rows(snap) if r.label == "2026.05 종가")
+        self.assertEqual(monthly_row.market_cap, 1.5e12)
 
 
 if __name__ == "__main__":
