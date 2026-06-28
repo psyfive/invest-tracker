@@ -1,7 +1,11 @@
 import unittest
 
 from price import PriceSnapshot
+<<<<<<< HEAD
 from price.summary_table import CURRENT_LABEL, PRESENTATION_LABEL, PREV_LABEL, build_price_summary_rows
+=======
+from price.summary_table import MONTHLY_CLOSE_LABEL_PREFIX, PRESENTATION_LABEL, build_price_summary_rows
+>>>>>>> db41634 (Add monthly close rows to price summary)
 
 
 class PriceSummaryTableTests(unittest.TestCase):
@@ -58,6 +62,37 @@ class PriceSummaryTableTests(unittest.TestCase):
         ])
         monthly_row = next(r for r in build_price_summary_rows(snap) if r.label == "2026.05 종가")
         self.assertEqual(monthly_row.market_cap, 1.5e12)
+
+    def test_monthly_close_rows_are_appended_after_presentation_row(self) -> None:
+        snap = PriceSnapshot(
+            ticker="000001.KS",
+            fetched_at="now",
+            last_close=1200,
+            prev_close=1180,
+            presentation_close={"date": "2026-04-30", "close": 1000},
+            last_5_closes=[
+                {"date": "2026-06-24", "close": 1160},
+                {"date": "2026-06-25", "close": 1170},
+                {"date": "2026-06-26", "close": 1180},
+                {"date": "2026-06-29", "close": 1190},
+                {"date": "2026-06-30", "close": 1200},
+            ],
+            monthly_closes=[
+                {"date": "2026-04-30", "close": 1000},
+                {"date": "2026-05-29", "close": 1100},
+                {"date": "2026-06-30", "close": 1200},
+            ],
+        )
+
+        rows = build_price_summary_rows(snap)
+        monthly_rows = [
+            row for row in rows
+            if row.label.startswith(MONTHLY_CLOSE_LABEL_PREFIX)
+        ]
+
+        self.assertEqual([row.label for row in monthly_rows], ["월별 종가 2026-05"])
+        self.assertEqual(monthly_rows[0].date, "2026-05-29")
+        self.assertEqual(monthly_rows[0].change_pct, 10.0)
 
 
 if __name__ == "__main__":

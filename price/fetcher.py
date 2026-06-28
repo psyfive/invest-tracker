@@ -19,6 +19,7 @@ class PriceSnapshot:
     market_cap: Optional[float] = None
     recent_closes: list[dict] = field(default_factory=list)
     presentation_close: Optional[dict] = None
+    monthly_closes: list[dict] = field(default_factory=list)
     last_5_closes: list[dict] = field(default_factory=list)
     shares_outstanding: Optional[float] = None
     presentation_market_cap: Optional[float] = None
@@ -162,6 +163,16 @@ def fetch_price_snapshot(ticker: str, presentation_month: str = "") -> PriceSnap
             _close_entry(idx, value)
             for idx, value in closes.tail(3).items()
         ]
+        if presentation_range:
+            current_month_start = date.today().replace(day=1)
+            complete_month_closes = closes[closes.index.date < current_month_start]
+            monthly_closes = complete_month_closes.groupby(
+                complete_month_closes.index.to_period("M")
+            ).tail(1)
+            snap.monthly_closes = [
+                _close_entry(idx, value)
+                for idx, value in monthly_closes.items()
+            ]
         if presentation_range:
             start, end = presentation_range
             month_closes = closes[
