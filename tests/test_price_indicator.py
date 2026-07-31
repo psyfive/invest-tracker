@@ -7,6 +7,7 @@ from price.indicator import (
     extract_target_price,
     format_target_detail_line,
     format_target_position_line,
+    format_target_price_source_text,
     parse_target_price_value,
 )
 
@@ -84,6 +85,101 @@ class PriceIndicatorTests(unittest.TestCase):
         self.assertEqual(target.value if target else None, 61000)
         self.assertEqual(target.display if target else None, "61,000\uc6d0")
         self.assertEqual(target.representative_label if target else None, "base")
+
+    def test_extract_target_price_reads_amount_on_following_line(self) -> None:
+        """발표자료는 목표주가를 도형 제목으로 두고 금액을 다음 줄에 두는 경우가 많다."""
+        text = "\n".join(
+            [
+                "--- Slide 24 ---",
+                "목표주가 벨류에이션 산정",
+                "벨류에이션 계산 - PSR 멀티플산정",
+                "2026 년 : 매출 270 억* PSR 36 / 21,346,230 주 = 45,000 원",
+            ]
+        )
+
+        target = extract_target_price(text)
+
+        self.assertIsNotNone(target)
+        self.assertEqual(target.value if target else None, 45000)
+
+    def test_extract_target_price_reads_broker_consensus_table(self) -> None:
+        text = "\n".join(
+            [
+                "증권사별 목표 주가 (2026년도)",
+                "LS 증권 531,000원 (06.Jun.2026)",
+                "IM 증권 800,000원 (11.May.2026)",
+                "한화투자증권 430,000원 (3.Feb.2026)",
+            ]
+        )
+
+        target = extract_target_price(text)
+
+        self.assertIsNotNone(target)
+        self.assertEqual(target.value if target else None, 531000)
+        self.assertTrue(target.is_consensus if target else False)
+
+    def test_extract_target_price_builds_scenarios_from_label_rows(self) -> None:
+        """라벨과 금액이 별도 줄인 시나리오 표에서도 가중평균이 나와야 한다."""
+        text = "\n".join(
+            [
+                "안전마진  ·  목표주가  ·  투자 전략",
+                "안전마진  (Bear · 희석 기준)",
+                "₩ 37,000원  (−53%)",
+                "Base 목표주가  (2026.12)",
+                "₩ 61,000원  (-13%)",
+                "Bull 목표주가  (AI 인프라 프리미엄)",
+                "₩ 97,000원  (+38%)",
+            ]
+        )
+
+        target = extract_target_price(text)
+
+        self.assertIsNotNone(target)
+        self.assertEqual(target.representative_label if target else None, "weighted_average")
+        self.assertEqual(target.value if target else None, 64000)
+        self.assertEqual(
+            [(scenario.label, scenario.value) for scenario in (target.scenarios if target else ())],
+            [("bear", 37000), ("base", 61000), ("bull", 97000)],
+        )
+
+    def test_extract_target_price_ignores_non_target_amounts_under_heading(self) -> None:
+        """목표가 헤딩 아래라도 매집 구간·현재가 같은 금액은 목표가가 아니다."""
+        text = "\n".join(
+            [
+                "Base 목표주가",
+                "₩ 61,000원",
+                "이상적 매집 구간: ₩45,000 이하",
+                "차익 실현 검토 구간: ₩75,000 이상",
+            ]
+        )
+
+        target = extract_target_price(text)
+
+        self.assertEqual(target.value if target else None, 61000)
+
+    def test_extract_target_price_ignores_unitless_amount_on_following_line(self) -> None:
+        text = "목표주가 산정 근거\n산업 평균 멀티플 36 적용"
+
+        self.assertIsNone(extract_target_price(text))
+
+    def test_extract_target_price_keeps_distant_amount_out_of_scope(self) -> None:
+        lines = ["목표주가 산정 근거"] + ["설명 줄"] * 12 + ["12,345원"]
+
+        self.assertIsNone(extract_target_price("\n".join(lines)))
+
+    def test_format_target_price_source_text_marks_consensus(self) -> None:
+        target = extract_target_price(
+            "증권사별 목표 주가\nLS 증권 531,000원"
+        )
+
+        text = format_target_price_source_text(target)
+
+        self.assertIn("증권사 컨센서스", text)
+        self.assertIn("531,000원", text)
+        # 렌더러가 이 문자열을 다시 파싱해도 컨센서스 표시가 유지돼야 한다.
+        reparsed = parse_target_price_value(text)
+        self.assertEqual(reparsed.value if reparsed else None, 531000)
+        self.assertTrue(reparsed.is_consensus if reparsed else False)
 
     def test_indicator_gauge_thresholds(self) -> None:
         cases = [

@@ -35,7 +35,7 @@ from price import (
     parse_target_price_value,
     save_snapshot,
 )
-from readers import read_file
+from readers import extraction_is_sparse, read_file
 from renderer import render_post
 from summarizer import SectorClassifier, Summary, get_summarizer
 
@@ -201,6 +201,14 @@ def _gather_text(file_paths: list[str], base_dir: Path) -> tuple[str, list[str]]
         except Exception as e:
             chunks.append(f"[{path.name} read failed: {e}]")
             continue
+        if extraction_is_sparse(path, text):
+            # 이미지 위주 자료는 목표주가가 그림 안에 있어 정규식으로는 잡히지 않는다.
+            # llm 모드에서는 OCR로 보강되지만 rule 모드에는 보강 경로가 없다.
+            print(
+                f"  [warning] {path.name}: 이미지 위주라 추출 텍스트가 {len(text):,}자뿐입니다. "
+                "--mode llm 으로 실행하면 OCR로 보강됩니다.",
+                file=sys.stderr,
+            )
         if text.strip():
             chunks.append(f"### File: {path.name}\n{text}")
             used.append(path.name)
@@ -219,13 +227,27 @@ def _resolve_source_paths(file_paths: list[str], base_dir: Path) -> list[Path]:
 
 
 def _target_price_text_from_source(text: str, fallback: str = "") -> str:
+    """요약기가 찾은 목표가를 우선하고, 없을 때만 원문에서 정규식으로 뽑는다.
+
+    fallback 은 요약기(LLM 또는 rule)가 채운 목표가 항목이다. 숫자로 파싱되면
+    그대로 쓰고, 파싱은 안 되더라도 서술형 근거가 남아 있으면 버리지 않는다.
+    예전에는 파싱 실패 시 정규식 결과로 덮어써서, 정규식이 못 찾으면
+    LLM이 찾아낸 목표가가 통째로 사라졌다.
+    """
     fallback_text = fallback.strip()
     if fallback_text and parse_target_price_value(fallback_text) is not None:
         return fallback_text
     target = extract_target_price(text)
     if target is not None:
         return format_target_price_source_text(target)
+    if fallback_text and not _is_no_target_info(fallback_text):
+        return fallback_text
     return ""
+
+
+def _is_no_target_info(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", text)
+    return not normalized or "자료내명시없음" in normalized or "(empty)" in normalized
 
 
 def process_config(

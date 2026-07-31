@@ -67,6 +67,21 @@ class ReportPipelineTests(unittest.TestCase):
             "",
         )
 
+    def test_target_price_keeps_unparseable_llm_text_instead_of_discarding(self) -> None:
+        """\uc815\uaddc\uc2dd\uc774 \ubabb \ucc3e\ub294\ub2e4\uace0 \ud574\uc11c \uc694\uc57d\uae30\uac00 \ucc3e\uc544\ub0b8 \uc11c\uc220\ud615 \ubaa9\ud45c\uac00\ub97c \ubc84\ub9ac\uba74 \uc548 \ub41c\ub2e4."""
+        fallback = "PSR 36\ubc30 \uc801\uc6a9 \uc2dc 2026\ub144 \uae30\uc900 \uc8fc\ub2f9 \uac00\uce58 [\ucd9c\ucc98: deck.pdf/Page 24]"
+
+        self.assertEqual(
+            _target_price_text_from_source("\uc0ac\uc5c5 \uc124\uba85\ub9cc \uc788\uc74c", fallback),
+            fallback,
+        )
+
+    def test_target_price_prefers_source_regex_over_unparseable_llm_text(self) -> None:
+        fallback = "\ubc38\ub958\uc5d0\uc774\uc158 \uadfc\uac70\ub9cc \uc11c\uc220"
+        text = "\ubaa9\ud45c\uc8fc\uac00: 95,000\uc6d0"
+
+        self.assertIn("95,000\uc6d0", _target_price_text_from_source(text, fallback))
+
 
 if __name__ == "__main__":
     unittest.main()

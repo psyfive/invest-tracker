@@ -16,6 +16,36 @@ TARGET_KEYWORDS = (
 )
 BASE_KEYWORDS = ("base", "기준", "컨센서스")
 SCENARIO_LABELS = ("bear", "base", "bull")
+
+# 발표자료는 "목표주가" 를 표/도형 제목으로 두고 금액은 다음 줄에 두는 경우가 많다.
+# 헤딩을 만나면 이 줄 수만큼 문맥을 이어서 금액 줄을 후보로 받아준다.
+TARGET_CONTEXT_LOOKAHEAD = 8
+
+# 헤딩 아래에 딸려 나오지만 목표가가 아닌 금액(현재가·매집구간·손절선 등)을 걸러낸다.
+# 상속 후보에만 적용한다 — 같은 줄에 목표가 키워드가 있으면 기존 동작을 유지한다.
+NON_TARGET_LINE_KEYWORDS = (
+    "현재",
+    "매집",
+    "지지선",
+    "차익",
+    "손절",
+    "공모가",
+    "액면",
+    "최고가",
+    "최저가",
+    "52주",
+    "시가총액",
+    "종가",
+    "거래량",
+)
+
+# 증권사 컨센서스 목표가인지 판별한다. "LS 증권", "한화투자증권" 같은 사명도 잡는다.
+CONSENSUS_RE = re.compile(
+    r"증권사|애널리스트|컨센서스|consensus|리서치|analyst"
+    r"|(?:^|[\s(\[])[A-Za-z가-힣]{1,10}\s*증권(?:[\s)\],:·]|$)",
+    re.IGNORECASE,
+)
+CONSENSUS_LABEL = "증권사 컨센서스"
 INVALID_SUFFIX_RE = re.compile(r"^\s*(년|월|일|E\b|EPS\b|PER\b|배|[%％])", re.IGNORECASE)
 INVALID_PREFIX_RE = re.compile(r"(EPS|PER)\s*$", re.IGNORECASE)
 AMOUNT_RE = re.compile(
@@ -50,6 +80,7 @@ class TargetPrice:
     scenarios: tuple[TargetPriceScenario, ...] = ()
     representative_label: str = ""
     rejected_candidates: tuple[RejectedTargetCandidate, ...] = ()
+    is_consensus: bool = False
 
 
 @dataclass(frozen=True)
@@ -78,6 +109,7 @@ class _Candidate:
     has_currency: bool
     is_base: bool
     scenario: str = ""
+    is_consensus: bool = False
 
 
 def _normalize_amount(match: re.Match[str]) -> tuple[str, float] | None:
@@ -107,6 +139,26 @@ def _has_base_keyword(text: str) -> bool:
 
 def _currency_marker(match: re.Match[str]) -> bool:
     return bool((match.group("prefix") or "").strip() or (match.group("suffix") or "").strip())
+
+
+def _is_target_heading(line: str) -> bool:
+    return _has_target_keyword(line) or (_has_base_keyword(line) and "목표" in line)
+
+
+def _has_non_target_context(line: str) -> bool:
+    return any(keyword in line for keyword in NON_TARGET_LINE_KEYWORDS)
+
+
+def _is_consensus_context(*lines: str) -> bool:
+    return any(line and CONSENSUS_RE.search(line) for line in lines)
+
+
+def _scenario_label_in(line: str) -> str:
+    low = (line or "").lower()
+    for label in SCENARIO_LABELS:
+        if re.search(rf"\b{label}\b", low):
+            return label
+    return ""
 
 
 def _scenario_label_near(line: str, match: re.Match[str]) -> str:
@@ -144,7 +196,11 @@ def _has_strong_target_context(line: str, match: re.Match[str]) -> bool:
 
 
 def _candidate_rejection_reason(line: str, match: re.Match[str], *, allow_unitless: bool) -> str:
-    prev_char = line[match.start() - 1 : match.start()]
+    # AMOUNT_RE 는 앞쪽 공백까지 매치에 포함하므로 match.start() 를 쓰면
+    # "LS 증권 531,000원" 의 직전 문자가 '권' 으로 잡혀 식별자 부착으로 오인된다.
+    # 숫자가 실제로 글자에 붙어 있는지는 number 그룹 기준으로 판단해야 한다.
+    number_start = match.start("number")
+    prev_char = line[number_start - 1 : number_start] if number_start > 0 else ""
     before = line[: match.start()]
     next_text = line[match.end() :]
     next_char = next_text[:1]
@@ -164,7 +220,14 @@ def _candidate_rejection_reason(line: str, match: re.Match[str], *, allow_unitle
     return ""
 
 
-def _candidate_score(line: str, match: re.Match[str]) -> int:
+def _candidate_score(
+    line: str,
+    match: re.Match[str],
+    *,
+    scenario: str = "",
+    heading_line: str = "",
+    heading_distance: int = 0,
+) -> int:
     around = line[max(0, match.start() - 80) : match.end() + 80]
     score = 0
     if _currency_marker(match):
@@ -178,8 +241,10 @@ def _candidate_score(line: str, match: re.Match[str]) -> int:
             score += 80
         else:
             score += 30
+    elif heading_line:
+        # 앞선 목표가 헤딩에서 문맥을 상속받은 경우: 헤딩에 가까울수록 높게 준다.
+        score += max(20, 120 - heading_distance * 15)
 
-    scenario = _scenario_label_near(line, match)
     if scenario == "base":
         score += 60
     elif scenario in {"bear", "bull"}:
@@ -197,12 +262,37 @@ def _collect_candidates(
 ) -> tuple[list[_Candidate], list[RejectedTargetCandidate]]:
     candidates: list[_Candidate] = []
     rejected: list[RejectedTargetCandidate] = []
+    heading_line = ""
+    heading_distance = 0
+    previous_line = ""
+
     for index, raw_line in enumerate((text or "").splitlines()):
         line = raw_line.strip()
+        own_heading = _is_target_heading(line)
+        if own_heading:
+            heading_line, heading_distance = line, 0
+        elif heading_line:
+            heading_distance += 1
+            if heading_distance > TARGET_CONTEXT_LOOKAHEAD:
+                heading_line, heading_distance = "", 0
+
         if not line:
+            previous_line = line
             continue
-        if require_target_line and not (_has_target_keyword(line) or (_has_base_keyword(line) and "목표" in line)):
+
+        # 헤딩이 앞줄에 있어 문맥을 물려받은 줄인지.
+        inherited = not own_heading and bool(heading_line)
+        if require_target_line and not own_heading and not inherited:
+            previous_line = line
             continue
+
+        if inherited and _has_non_target_context(line):
+            rejected.append(
+                RejectedTargetCandidate(display=line[:40], reason="non_target_line", source=line[:200])
+            )
+            previous_line = line
+            continue
+
         for match in AMOUNT_RE.finditer(line):
             normalized = _normalize_amount(match)
             if normalized is None:
@@ -212,23 +302,46 @@ def _collect_candidates(
             if reason:
                 rejected.append(RejectedTargetCandidate(display=display, reason=reason, source=line[:200]))
                 continue
-            score = _candidate_score(line, match)
+            # 물려받은 문맥에서 단위 없는 숫자를 받아주면 오탐이 급격히 늘어난다.
+            if inherited and not _currency_marker(match):
+                rejected.append(
+                    RejectedTargetCandidate(display=display, reason="inherited_without_currency", source=line[:200])
+                )
+                continue
+
+            scenario = _scenario_label_near(line, match)
+            if not scenario:
+                scenario = _scenario_label_in(previous_line) or _scenario_label_in(heading_line)
+
+            score = _candidate_score(
+                line,
+                match,
+                scenario=scenario,
+                heading_line=heading_line if inherited else "",
+                heading_distance=heading_distance,
+            )
             if score <= 0:
                 rejected.append(RejectedTargetCandidate(display=display, reason="no_target_context", source=line[:200]))
                 continue
+
             context = line[max(0, match.start() - 80) : match.end() + 80]
+            source = line[:200]
+            if inherited:
+                source = f"{heading_line[:100]} / {line[:100]}"
             candidates.append(
                 _Candidate(
                     display=display,
                     value=value,
-                    source=line[:200],
+                    source=source,
                     index=index,
                     score=score,
                     has_currency=_currency_marker(match),
                     is_base=_has_base_keyword(context),
-                    scenario=_scenario_label_near(line, match),
+                    scenario=scenario,
+                    is_consensus=_is_consensus_context(line, heading_line),
                 )
             )
+        previous_line = line
     return candidates, rejected
 
 
@@ -284,6 +397,8 @@ def _build_target_price(
         if label in scenario_map
     )
 
+    consensus = any(candidate.is_consensus for candidate in scenario_map.values()) or best.is_consensus
+
     if all(label in scenario_map for label in SCENARIO_LABELS):
         representative_value = (
             scenario_map["bear"].value * 0.25
@@ -298,6 +413,7 @@ def _build_target_price(
             scenarios=scenarios,
             representative_label="weighted_average",
             rejected_candidates=tuple(rejected),
+            is_consensus=consensus,
         )
 
     if "base" in scenario_map:
@@ -310,6 +426,7 @@ def _build_target_price(
             scenarios=scenarios,
             representative_label="base",
             rejected_candidates=tuple(rejected),
+            is_consensus=consensus,
         )
 
     return TargetPrice(
@@ -320,6 +437,7 @@ def _build_target_price(
         scenarios=scenarios,
         representative_label="base" if best.is_base else "",
         rejected_candidates=tuple(rejected),
+        is_consensus=consensus,
     )
 
 
@@ -338,12 +456,13 @@ def parse_target_price_value(text: str) -> TargetPrice | None:
 def format_target_price_source_text(target: TargetPrice | None) -> str:
     if target is None:
         return ""
+    prefix = f"{CONSENSUS_LABEL} " if target.is_consensus else ""
     if target.scenarios:
         return "\n".join(
-            f"{scenario.label.title()} 목표가: {scenario.display}"
+            f"{prefix}{scenario.label.title()} 목표가: {scenario.display}"
             for scenario in target.scenarios
         )
-    return target.display
+    return f"{prefix}목표가: {target.display}" if prefix else target.display
 
 
 def _gauge_for_achievement(achievement_pct: float) -> tuple[str, str]:
@@ -429,13 +548,14 @@ def format_target_detail_line(position: TargetPosition) -> str:
     if position.target is None:
         return "목표주가: 없음"
     current = "-" if position.current_price is None else f"{position.current_price:,.2f}"
+    consensus = f"[{CONSENSUS_LABEL}] " if position.target.is_consensus else ""
     if position.target.scenarios:
         scenario_text = " / ".join(
             f"{scenario.label.title()}: {scenario.display}"
             for scenario in position.target.scenarios
         )
         if position.target.representative_label == "weighted_average":
-            return f"현재가: {current} / {scenario_text} / 가중평균 목표가: {position.target.display}"
-        return f"현재가: {current} / {scenario_text} / 대표 목표가: {position.target.display}"
+            return f"현재가: {current} / {consensus}{scenario_text} / 가중평균 목표가: {position.target.display}"
+        return f"현재가: {current} / {consensus}{scenario_text} / 대표 목표가: {position.target.display}"
     base = "Base " if position.target.is_base else ""
-    return f"현재가: {current} / {base}목표가: {position.target.display}"
+    return f"현재가: {current} / {consensus}{base}목표가: {position.target.display}"

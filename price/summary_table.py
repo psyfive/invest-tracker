@@ -52,14 +52,10 @@ def _change_pct(current: float | None, previous: float | None) -> float | None:
 
 
 def build_price_summary_rows(snap: PriceSnapshot) -> list[PriceSummaryRow]:
-<<<<<<< HEAD
     """Return rows used by HTML and Notion price toggles.
 
     Order: 발표시점 종가 → 월별 종가(오래된 순) → 전일 종가 → 현재가
     """
-=======
-    """Return rows used by HTML and Notion price toggles."""
->>>>>>> db41634 (Add monthly close rows to price summary)
     closes = _ordered_closes(snap)
     current_date, current_close = _close_row(closes[-1] if len(closes) >= 1 else None)
     prev_date, prev_close = _close_row(closes[-2] if len(closes) >= 2 else None)
@@ -71,21 +67,14 @@ def build_price_summary_rows(snap: PriceSnapshot) -> list[PriceSummaryRow]:
 
     presentation_date, presentation_close = _close_row(snap.presentation_close)
 
-<<<<<<< HEAD
     rows: list[PriceSummaryRow] = [
-=======
-    rows = [
-        PriceSummaryRow(CURRENT_LABEL, current_date, current_close,
-                        _change_pct(current_close, presentation_close), snap.market_cap),
-        PriceSummaryRow(PREV_LABEL, prev_date, prev_close,
-                        _change_pct(prev_close, presentation_close), None),
-        PriceSummaryRow(TWO_DAYS_AGO_LABEL, two_days_ago_date, two_days_ago_close,
-                        _change_pct(two_days_ago_close, presentation_close), None),
->>>>>>> db41634 (Add monthly close rows to price summary)
         PriceSummaryRow(PRESENTATION_LABEL, presentation_date, presentation_close,
-                        _change_pct(current_close, presentation_close), snap.presentation_market_cap),
+                        None, snap.presentation_market_cap),
     ]
-    seen_dates = {date for date in (current_date, prev_date, two_days_ago_date, presentation_date) if date != "-"}
+
+    # 월별 종가는 발표시점과 현재/전일 사이에 오래된 순으로 끼워 넣는다.
+    # 등락률은 직전 월 종가 대비(첫 행은 발표시점 종가 대비)로 계산한다.
+    seen_dates = {date for date in (current_date, prev_date, presentation_date) if date != "-"}
     previous_monthly_close = presentation_close
     for monthly in snap.monthly_closes or []:
         month_date, month_close = _close_row(monthly)
@@ -94,24 +83,15 @@ def build_price_summary_rows(snap: PriceSnapshot) -> list[PriceSummaryRow]:
         label_month = month_date[:7] if len(month_date) >= 7 else month_date
         rows.append(
             PriceSummaryRow(
-                f"{MONTHLY_CLOSE_LABEL_PREFIX} {label_month}",
+                str(monthly.get("label") or f"{MONTHLY_CLOSE_LABEL_PREFIX} {label_month}"),
                 month_date,
                 month_close,
                 _change_pct(month_close, previous_monthly_close),
-                None,
+                _float_or_none(monthly.get("market_cap")),
             )
         )
         seen_dates.add(month_date)
         previous_monthly_close = month_close
-    return rows
-
-    for m in (snap.monthly_closes or []):
-        m_date = str(m.get("date") or "-")
-        m_close = _float_or_none(m.get("close"))
-        m_cap = _float_or_none(m.get("market_cap"))
-        m_label = str(m.get("label") or m_date)
-        rows.append(PriceSummaryRow(m_label, m_date, m_close,
-                                    _change_pct(m_close, presentation_close), m_cap))
 
     rows.append(PriceSummaryRow(PREV_LABEL, prev_date, prev_close,
                                 _change_pct(prev_close, presentation_close), None))

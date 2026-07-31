@@ -22,6 +22,27 @@ SUPPORTED_EXTS = {
     ".hwp",
 }
 
+# 이미지 위주 발표자료는 텍스트 레이어가 거의 없어 원본 대비 추출량이 급감한다.
+# 원본 1KB 당 이 글자 수 미만이면 OCR 없이는 내용을 읽을 수 없다고 본다.
+SPARSE_CHARS_PER_KB = 1.5
+OCR_CANDIDATE_EXTS = {".pdf", ".pptx"}
+
+
+def extraction_is_sparse(path: str | Path, text: str) -> bool:
+    """텍스트 추출이 사실상 실패했는지(이미지 기반 자료인지) 판정한다."""
+    p = Path(path)
+    if p.suffix.lower() not in OCR_CANDIDATE_EXTS:
+        return False
+    if not (text or "").strip():
+        return True
+    try:
+        size_kb = p.stat().st_size / 1024
+    except OSError:
+        return False
+    if size_kb <= 0:
+        return False
+    return len(text) / size_kb < SPARSE_CHARS_PER_KB
+
 
 def _read_pptx(path: Path) -> str:
     from pptx import Presentation

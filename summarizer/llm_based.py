@@ -5,6 +5,7 @@ import json
 import os
 import random
 import re
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,7 +13,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable
 
-from readers import read_file
+from readers import extraction_is_sparse, read_file
 
 from .base import Summary, Summarizer
 
@@ -26,6 +27,20 @@ SOURCE_RE = re.compile(r"\[(?:출처|source)\s*:\s*([^\]]+)\]", re.IGNORECASE)
 SUMMARY_SECTION_KEYS = ("overview", "thesis", "risks")
 DEFAULT_MAX_ITEMS = {"overview": 3, "thesis": 8, "risks": 8}
 DEFAULT_COMPACT_RETRY_MAX_ITEMS = {"overview": 3, "thesis": 6, "risks": 6}
+
+OCR_PROMPT = (
+    "이 자료의 모든 텍스트를 그대로 추출하세요. 표, 수치, 축 라벨, 각주, 섹션 제목을 포함합니다.\n"
+    "규칙:\n"
+    "- 원문에 있는 문자와 숫자만 옮겨 적으세요. 요약·번역·해석·계산을 하지 마세요.\n"
+    "- 목표주가·적정주가·밸류에이션 표가 있으면 항목명과 금액을 같은 줄에 붙여서 적으세요.\n"
+    "  예: 'Base 목표주가 61,000원'\n"
+    "- 읽을 수 없는 부분은 비워 두고 추측해서 채우지 마세요."
+)
+MAX_OCR_IMAGE_BYTES = 7 * 1024 * 1024
+DEFAULT_MAX_OCR_SLIDES = 40
+DEFAULT_MAX_OCR_IMAGES_PER_SLIDE = 4
+DEFAULT_OCR_SLIDE_TEXT_THRESHOLD = 80
+SLIDE_MARKER_RE = re.compile(r"^---\s*Slide\s+(\d+)\s*---\s*$", re.IGNORECASE)
 
 SUMMARY_PROMPT = """You are an assistant analyst for a Korean investment study.
 Use only the provided source blocks. Do not infer facts that are not in the materials.
@@ -491,6 +506,52 @@ def _read_text_document(path: Path, text: str | None = None) -> SourceDocument:
             "chunks": chunks,
         },
     )
+
+
+def _native_text_by_slide(text: str) -> dict[int, str]:
+    """`--- Slide N ---` 마커로 구분된 추출 텍스트를 슬라이드 번호별로 나눈다."""
+    by_slide: dict[int, list[str]] = {}
+    current: int | None = None
+    for raw in (text or "").splitlines():
+        marker = SLIDE_MARKER_RE.match(raw.strip())
+        if marker:
+            current = int(marker.group(1))
+            by_slide.setdefault(current, [])
+            continue
+        if current is not None:
+            by_slide[current].append(raw)
+    return {index: "\n".join(lines).strip() for index, lines in by_slide.items()}
+
+
+def _pptx_slide_images(path: Path) -> list[tuple[int, list[tuple[bytes, str]]]]:
+    """슬라이드별 그림 blob 목록. 그룹 도형 안쪽까지 재귀한다."""
+    try:
+        from pptx import Presentation
+        from pptx.enum.shapes import MSO_SHAPE_TYPE
+    except ImportError as e:
+        raise RuntimeError("python-pptx is not installed") from e
+
+    prs = Presentation(str(path))
+    slides: list[tuple[int, list[tuple[bytes, str]]]] = []
+    for index, slide in enumerate(prs.slides, start=1):
+        images: list[tuple[bytes, str]] = []
+
+        def walk(shapes) -> None:
+            for shape in shapes:
+                if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                    walk(shape.shapes)
+                    continue
+                try:
+                    image = shape.image
+                except (AttributeError, ValueError):
+                    continue
+                blob = getattr(image, "blob", None)
+                if blob:
+                    images.append((blob, getattr(image, "content_type", "image/png") or "image/png"))
+
+        walk(slide.shapes)
+        slides.append((index, images))
+    return slides
 
 
 def _read_pdf_block(path: Path) -> SourceDocument:
@@ -986,6 +1047,9 @@ class LLMSummarizer(Summarizer):
         fallback_on_error: bool = False,
         api_retries: int = 3,
         sleep_func: Callable[[float], None] = time.sleep,
+        max_ocr_slides: int = DEFAULT_MAX_OCR_SLIDES,
+        max_ocr_images_per_slide: int = DEFAULT_MAX_OCR_IMAGES_PER_SLIDE,
+        ocr_slide_text_threshold: int = DEFAULT_OCR_SLIDE_TEXT_THRESHOLD,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
@@ -1000,6 +1064,9 @@ class LLMSummarizer(Summarizer):
         self.fallback_on_error = fallback_on_error
         self.api_retries = api_retries
         self.sleep_func = sleep_func
+        self.max_ocr_slides = max_ocr_slides
+        self.max_ocr_images_per_slide = max_ocr_images_per_slide
+        self.ocr_slide_text_threshold = ocr_slide_text_threshold
         self._genai_client: Any | None = None
         self._last_response_metadata: dict[str, Any] = {}
         self._last_attempt_mode = "standard"
@@ -1027,7 +1094,7 @@ class LLMSummarizer(Summarizer):
             model=self.model,
             contents=[
                 file_ref,
-                "이 문서의 모든 텍스트를 추출하세요. 표, 수치, 섹션 제목 포함. 원문 구조를 유지하세요.",
+                OCR_PROMPT,
             ],
         )
         text = str(getattr(response, "text", "") or "")
@@ -1039,6 +1106,103 @@ class LLMSummarizer(Summarizer):
             block_labels=labels,
             content_block={"type": "source_blocks", "chunks": chunks},
         )
+
+    def _read_pptx_via_gemini(self, path: Path, native_text: str = "") -> SourceDocument:
+        """이미지 위주 PPTX를 슬라이드 단위로 OCR 한다.
+
+        python-pptx가 뽑아낸 네이티브 텍스트(제목 등)는 그대로 두고,
+        텍스트가 거의 없는 슬라이드의 그림만 Gemini Vision으로 읽어 합친다.
+        슬라이드 라벨을 유지해야 출처 표기가 기존과 같은 형태로 남는다.
+        """
+        slides = _pptx_slide_images(path)
+        if not slides:
+            raise RuntimeError(f"OCR 대상 이미지를 찾지 못함: {path.name}")
+
+        native_by_slide = _native_text_by_slide(native_text)
+        targets = [
+            (index, images)
+            for index, images in slides
+            if images and len(native_by_slide.get(index, "")) < self.ocr_slide_text_threshold
+        ]
+        if not targets:
+            raise RuntimeError(f"OCR가 필요한 슬라이드가 없음: {path.name}")
+
+        targets = targets[: self.max_ocr_slides]
+        print(f"  [ocr] Gemini Vision으로 PPTX 슬라이드 {len(targets)}장 추출 중: {path.name}")
+
+        client = self._client()
+        from google.genai import types as genai_types
+
+        ocr_by_slide: dict[int, str] = {}
+        for slide_index, images in targets:
+            parts: list[Any] = []
+            for blob, content_type in images[: self.max_ocr_images_per_slide]:
+                if len(blob) > MAX_OCR_IMAGE_BYTES:
+                    continue
+                parts.append(genai_types.Part.from_bytes(data=blob, mime_type=content_type))
+            if not parts:
+                continue
+            try:
+                response = client.models.generate_content(
+                    model=self.model,
+                    contents=[*parts, OCR_PROMPT],
+                )
+            except Exception as e:  # noqa: BLE001 - 슬라이드 하나 실패로 전체를 버리지 않는다
+                print(f"  [ocr] slide {slide_index} 실패: {e}", file=sys.stderr)
+                continue
+            text = str(getattr(response, "text", "") or "").strip()
+            if text:
+                ocr_by_slide[slide_index] = text
+
+        if not ocr_by_slide:
+            raise RuntimeError(f"Gemini OCR가 텍스트를 반환하지 않음: {path.name}")
+
+        merged: list[str] = []
+        for index, _images in slides:
+            body = "\n".join(
+                part for part in (native_by_slide.get(index, "").strip(), ocr_by_slide.get(index, "")) if part
+            )
+            if body:
+                merged.append(f"--- Slide {index} ---\n{body}")
+
+        chunks, labels = _split_text_chunks(path, "\n\n".join(merged))
+        if not chunks:
+            raise RuntimeError(f"Gemini OCR 결과가 비어 있음: {path.name}")
+        return SourceDocument(
+            title=path.name,
+            block_labels=labels,
+            content_block={"type": "source_blocks", "chunks": chunks},
+        )
+
+    def _read_document_with_ocr_fallback(self, path: Path) -> tuple[SourceDocument, str]:
+        """일반 추출을 먼저 시도하고, 비었거나 희박하면 OCR로 보강한다.
+
+        반환값의 두 번째 항목은 로그용 상태 문자열이다.
+        """
+        native_text = ""
+        try:
+            native_text = read_file(path)
+        except Exception as e:  # noqa: BLE001
+            native_text = ""
+            print(f"  [warning] {path.name} 텍스트 추출 실패: {e}", file=sys.stderr)
+
+        sparse = extraction_is_sparse(path, native_text)
+        if not sparse:
+            return _read_text_document(path, native_text), "text"
+
+        suffix = path.suffix.lower()
+        chars = len(native_text)
+        print(f"  [ocr] {path.name} 텍스트가 희박함({chars:,}자) — OCR 시도")
+        try:
+            if suffix == ".pdf":
+                return self._read_pdf_via_gemini(path), "ocr"
+            if suffix == ".pptx":
+                return self._read_pptx_via_gemini(path, native_text), "ocr"
+        except Exception as e:  # noqa: BLE001
+            print(f"  [warning] {path.name} OCR 실패: {e}", file=sys.stderr)
+
+        # OCR이 안 되면 원래 추출 결과라도 쓴다. 그것도 비면 호출부에서 실패 처리.
+        return _read_text_document(path, native_text), "text_sparse"
 
     def _call_api(self, documents: list[SourceDocument], prompt: str) -> str:
         contents = [
@@ -1239,16 +1403,17 @@ class LLMSummarizer(Summarizer):
         failures: list[str] = []
         for path in paths:
             try:
-                documents.append(_read_text_document(path))
+                document, mode = self._read_document_with_ocr_fallback(path)
             except RuntimeError as e:
-                if path.suffix.lower() == ".pdf":
-                    try:
-                        documents.append(self._read_pdf_via_gemini(path))
-                        continue
-                    except Exception as ocr_e:
-                        failures.append(f"{path.name}: OCR 실패 ({ocr_e})")
-                else:
-                    failures.append(f"{path.name}: {e}")
+                failures.append(f"{path.name}: {e}")
+                continue
+            if mode == "text_sparse":
+                print(
+                    f"  [warning] {path.name} 은 이미지 위주라 텍스트가 거의 없고 OCR도 실패했습니다. "
+                    "요약 품질이 낮을 수 있습니다.",
+                    file=sys.stderr,
+                )
+            documents.append(document)
         if not documents:
             raise RuntimeError("no readable source files for LLM summarization: " + "; ".join(failures))
 

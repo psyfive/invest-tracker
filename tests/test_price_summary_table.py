@@ -1,11 +1,13 @@
 import unittest
 
 from price import PriceSnapshot
-<<<<<<< HEAD
-from price.summary_table import CURRENT_LABEL, PRESENTATION_LABEL, PREV_LABEL, build_price_summary_rows
-=======
-from price.summary_table import MONTHLY_CLOSE_LABEL_PREFIX, PRESENTATION_LABEL, build_price_summary_rows
->>>>>>> db41634 (Add monthly close rows to price summary)
+from price.summary_table import (
+    CURRENT_LABEL,
+    MONTHLY_CLOSE_LABEL_PREFIX,
+    PRESENTATION_LABEL,
+    PREV_LABEL,
+    build_price_summary_rows,
+)
 
 
 class PriceSummaryTableTests(unittest.TestCase):
