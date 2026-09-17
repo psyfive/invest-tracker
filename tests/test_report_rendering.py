@@ -79,8 +79,8 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn("50.0%", html)
         self.assertIn(PRICE_SUMMARY, html)
         self.assertIn(CURRENT_PRICE, html)
-        self.assertIn(PREV_CLOSE, html)
-        self.assertIn(TWO_DAYS_AGO_CLOSE, html)
+        self.assertNotIn(PREV_CLOSE, html)
+        self.assertNotIn(TWO_DAYS_AGO_CLOSE, html)
         self.assertIn(PRESENTATION_CLOSE, html)
         self.assertIn(CHANGE_PCT, html)
         self.assertIn(MARKET_CAP, html)
@@ -94,7 +94,6 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn(NO_INFO, html)
         self.assertIn(SOURCE_MARKER, html)
         self.assertIn('color:#d32f2f', html)
-        self.assertIn('color:#1976d2', html)
         self.assertIn('<h2>Company overview</h2><ul>', html)
         self.assertIn(f'<li style="margin-bottom:8px">{CORE_BM}<ul><li>', html)
         self.assertIn(f'<li style="margin-bottom:8px">{MARKET_POSITION}<ul><li>{NO_INFO}</li></ul></li>', html)
@@ -117,8 +116,8 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn("50.0%", serialized)
         self.assertIn(PRICE_SUMMARY, serialized)
         self.assertIn(CURRENT_PRICE, serialized)
-        self.assertIn(PREV_CLOSE, serialized)
-        self.assertIn(TWO_DAYS_AGO_CLOSE, serialized)
+        self.assertNotIn(PREV_CLOSE, serialized)
+        self.assertNotIn(TWO_DAYS_AGO_CLOSE, serialized)
         self.assertIn(PRESENTATION_CLOSE, serialized)
         self.assertIn(CHANGE_PCT, serialized)
         self.assertIn(MARKET_CAP, serialized)
@@ -144,10 +143,10 @@ class ReportRenderingTests(unittest.TestCase):
 
         table = next(child for child in toggle["toggle"]["children"] if child["type"] == "table")
         rows = table["table"]["children"]
-        current_change_cell = rows[1]["table_row"]["cells"][3][0]
-        presentation_change_cell = rows[4]["table_row"]["cells"][3][0]
+        presentation_change_cell = rows[1]["table_row"]["cells"][3][0]
+        current_change_cell = rows[2]["table_row"]["cells"][3][0]
         self.assertEqual(current_change_cell["annotations"]["color"], "red")
-        self.assertEqual(presentation_change_cell["annotations"]["color"], "red")
+        self.assertEqual(presentation_change_cell["annotations"]["color"], "gray")
 
         overview_heading_index = next(
             index for index, block in enumerate(blocks)
@@ -216,7 +215,7 @@ class ReportRenderingTests(unittest.TestCase):
         rows = table["table"]["children"]
 
         self.assertEqual(rows[1]["table_row"]["cells"][3][0]["annotations"]["color"], "gray")
-        self.assertEqual(rows[4]["table_row"]["cells"][3][0]["annotations"]["color"], "gray")
+        self.assertEqual(rows[2]["table_row"]["cells"][3][0]["annotations"]["color"], "gray")
         self.assertIn('color:#666', html)
 
     def test_price_toggle_shows_scenario_targets_and_weighted_average(self) -> None:

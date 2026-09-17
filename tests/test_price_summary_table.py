@@ -5,7 +5,6 @@ from price.summary_table import (
     CURRENT_LABEL,
     MONTHLY_CLOSE_LABEL_PREFIX,
     PRESENTATION_LABEL,
-    PREV_LABEL,
     build_price_summary_rows,
 )
 
@@ -35,13 +34,13 @@ class PriceSummaryTableTests(unittest.TestCase):
         ])
         rows = build_price_summary_rows(snap)
         labels = [r.label for r in rows]
-        self.assertEqual(labels, [PRESENTATION_LABEL, "2026.05 종가", PREV_LABEL, CURRENT_LABEL])
+        self.assertEqual(labels, [PRESENTATION_LABEL, "2026.05 종가", CURRENT_LABEL])
 
-    def test_no_monthly_closes_gives_four_rows(self):
+    def test_no_monthly_closes_gives_two_rows(self):
         snap = self._make_snap()
         rows = build_price_summary_rows(snap)
         labels = [r.label for r in rows]
-        self.assertEqual(labels, [PRESENTATION_LABEL, PREV_LABEL, CURRENT_LABEL])
+        self.assertEqual(labels, [PRESENTATION_LABEL, CURRENT_LABEL])
 
     def test_presentation_change_pct_is_none(self):
         snap = self._make_snap()
@@ -53,10 +52,11 @@ class PriceSummaryTableTests(unittest.TestCase):
         current_row = next(r for r in build_price_summary_rows(snap) if r.label == CURRENT_LABEL)
         self.assertEqual(current_row.change_pct, 63.93)
 
-    def test_prev_row_has_no_market_cap(self):
+    def test_recent_history_rows_are_not_rendered(self):
         snap = self._make_snap()
-        prev_row = next(r for r in build_price_summary_rows(snap) if r.label == PREV_LABEL)
-        self.assertIsNone(prev_row.market_cap)
+        labels = [r.label for r in build_price_summary_rows(snap)]
+        self.assertNotIn("전일 종가", labels)
+        self.assertNotIn("이틀 전 종가", labels)
 
     def test_monthly_row_market_cap_populated(self):
         snap = self._make_snap(monthly_closes=[
